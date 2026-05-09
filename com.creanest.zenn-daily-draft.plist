@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  zenn-daily-draft launchctl agent.
+
+  毎日 05:00 JST に scripts/generate-draft.sh を起動して claude -p "/zenn-next" を実行する。
+
+  Load:   launchctl load ~/Library/LaunchAgents/com.creanest.zenn-daily-draft.plist
+  Unload: launchctl unload ~/Library/LaunchAgents/com.creanest.zenn-daily-draft.plist
+  Trigger 1 回:
+          launchctl start com.creanest.zenn-daily-draft
+
+  PATH に claude CLI と bash が居る前提。EnvironmentVariables.PATH は CEO 環境に合わせて編集すること。
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.creanest.zenn-daily-draft</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>/Users/sakaki/project/zenn-articles/scripts/generate-draft.sh</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>5</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/sakaki/project/zenn-articles</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/sakaki/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/sakaki/project/zenn-articles/.zenn-logs/launchctl.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/sakaki/project/zenn-articles/.zenn-logs/launchctl.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

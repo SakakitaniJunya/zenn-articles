@@ -1,0 +1,46 @@
+name: Post-publish tweet (Phase 2)
+# main に merge された articles/ で published: true に切り替わった記事を検出し、
+# X (Twitter) v2 API で告知 tweet を投稿する。
+# claude CLI は使わず純 bash + curl で完結 (CI で API key 課金不要)。
+# 現状は stub。実装は Phase 2 で。
+
+on:
+  push:
+    branches: [main]
+    paths: ["articles/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tweet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect newly published articles
+        id: detect
+        run: |
+          # diff で published: false → true に変わった記事を抽出
+          newly=$(git diff HEAD~1 HEAD -- articles/ | grep -E '^\+published: true' || echo "")
+          if [[ -z "${newly}" ]]; then
+            echo "no_publish=true" >> "${GITHUB_OUTPUT}"
+            echo "[detect] no newly published article"
+          fi
+
+      - name: Tweet (stub)
+        if: steps.detect.outputs.no_publish != 'true'
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+        run: |
+          if [[ -z "${X_API_KEY}" ]]; then
+            echo "[tweet] X secrets not set — skip"
+            exit 0
+          fi
+          bash scripts/publish-next.sh

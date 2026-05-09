@@ -1,0 +1,304 @@
+# Zenn 執筆 topic queue (52 + 1 INDEX)
+#
+# - status: pending | drafting | review | published | skipped
+# - priority: 1 (最強アピール) - 5 (補助)
+# - axis: 同軸連投を避けるため shuffle 用
+# - source: 元ネタ (devops-hub の docs / 該当 repo)
+
+meta:
+  total: 53
+  shuffle_window: 3   # 直近3本で同 axis 連続を避ける
+  per_day: 1
+  start_date: "2026-05-10"
+
+topics:
+  # ===== INDEX (フラッグシップ) =====
+  - id: INDEX
+    title: "AI 駆動開発を 1 年やって辿り着いた構成 — 8 SaaS と自作 Eval Harness の全体マップ"
+    axis: meta
+    priority: 1
+    status: drafting
+    emoji: "🤖"
+    zenn_topics: [ai, claude, anthropic, agentsdk, typescript]
+    source: docs/business/hr/ai-development-portfolio.md
+    notes: 全 52 トピックへの index、書きながらリンクを増やす資産型
+
+  # ===== A. Claude Code 拡張・運用 =====
+  - id: A-01
+    title: 'Claude Code を「会社」にする — Slash / Subagent / Hook / Skill / MCP 役割分担'
+    axis: claude-code
+    priority: 1
+    status: pending
+  - id: A-02
+    title: "Skill Architecture 入門 — 自動 fire する手続き的知識を YAML で定義する"
+    axis: claude-code
+    priority: 2
+    status: pending
+  - id: A-03
+    title: "Claude Code の Hooks で PostToolUse / Stop を組み合わせて品質ゲートを作る"
+    axis: claude-code
+    priority: 2
+    status: pending
+  - id: A-04
+    title: "~/.claude/agents で 13 部署のサブエージェントを宣言的に管理する"
+    axis: claude-code
+    priority: 2
+    status: pending
+  - id: A-05
+    title: "Claude Code の Memory で「ユーザ理解 / 改善指示 / 案件 / 参照」を分離する"
+    axis: claude-code
+    priority: 3
+    status: pending
+  - id: A-06
+    title: "Worktree 並列エージェントを安全に運用する — isolation バグと verify パターン"
+    axis: claude-code
+    priority: 2
+    status: pending
+  - id: A-07
+    title: "Claude Code の Status Line を KPI ダッシュボード化する"
+    axis: claude-code
+    priority: 4
+    status: pending
+  - id: A-08
+    title: "MCP Server を 1 ファイルで自作 — 公式 Figma と自作を併用した話"
+    axis: claude-code
+    priority: 3
+    status: pending
+  - id: A-09
+    title: "Plan Mode / Auto Mode / Fast Mode を CEO ロールで使い分ける"
+    axis: claude-code
+    priority: 3
+    status: pending
+  - id: A-10
+    title: "settings.json の使い分け — 個人 hook と project hook を分離する"
+    axis: claude-code
+    priority: 4
+    status: pending
+
+  # ===== B. Multi-Agent 設計 =====
+  - id: B-01
+    title: "Creator ≠ Evaluator パターン — AI 生成物を「収束」させる 3 ラウンド設計"
+    axis: multi-agent
+    priority: 1
+    status: pending
+  - id: B-02
+    title: "Multi-Agent の収束ガードと Escalation Threshold — 無限ループを止める実装"
+    axis: multi-agent
+    priority: 2
+    status: pending
+  - id: B-03
+    title: "7 エージェント協調 CI/CD (PMA → DocsA → DevA → RevA → EvalA → TestA → CIA)"
+    axis: multi-agent
+    priority: 1
+    status: pending
+  - id: B-04
+    title: "13 部署 director × Project Namespace で AI に「役職と所属」を持たせる"
+    axis: multi-agent
+    priority: 2
+    status: pending
+  - id: B-05
+    title: "Silent Router 設計 — 自然文 → 無音 dispatch で「どの部署?」を聞かない"
+    axis: multi-agent
+    priority: 2
+    status: pending
+  - id: B-06
+    title: "AI 部署間の Handoff Playbook を Markdown で書く"
+    axis: multi-agent
+    priority: 3
+    status: pending
+  - id: B-07
+    title: "Sub-Agent を「Creator / Validator / RateLimiter / Fallback」4 層で固定する"
+    axis: multi-agent
+    priority: 2
+    status: pending
+
+  # ===== C. LLM-as-Judge / Eval =====
+  - id: C-01
+    title: "LLM-as-Judge を 13 Evaluator で並列実行する評価ハーネス"
+    axis: eval
+    priority: 1
+    status: pending
+  - id: C-02
+    title: "Promptfoo を使わず「Judge プロンプト + JSON スコア」で回帰テストを作る"
+    axis: eval
+    priority: 2
+    status: pending
+  - id: C-03
+    title: "AI 出力の品質スコアを decisions.jsonl に蓄積して意思決定の家系図を作る"
+    axis: eval
+    priority: 1
+    status: pending
+  - id: C-04
+    title: "Decision Genealogy — 全 commit / ADR / 承認に Decision-Id を貫通させる moat"
+    axis: eval
+    priority: 1
+    status: pending
+
+  # ===== D. Multi-LLM / AI Router =====
+  - id: D-01
+    title: 'Claude / GPT-4o / Gemini を「タスク特性 4 象限」で振り分ける AI Router'
+    axis: multi-llm
+    priority: 1
+    status: pending
+  - id: D-02
+    title: "Fallback Chain (OpenAI → Anthropic → Google) の実装と落とし穴"
+    axis: multi-llm
+    priority: 2
+    status: pending
+  - id: D-03
+    title: "JSON モードのプロバイダ差異を吸収する薄いアダプタ層"
+    axis: multi-llm
+    priority: 3
+    status: pending
+  - id: D-04
+    title: "LLM コスト最適化 — Haiku / Flash / Mini をどう混ぜるか"
+    axis: multi-llm
+    priority: 2
+    status: pending
+  - id: D-05
+    title: "Anthropic Prompt Caching でシステムプロンプトを 90% 安くする"
+    axis: multi-llm
+    priority: 1
+    status: pending
+  - id: D-06
+    title: "Anthropic Extended Thinking をコード生成タスクで使う / 使わない判断"
+    axis: multi-llm
+    priority: 2
+    status: pending
+  - id: D-07
+    title: "Claude Tool Use × 自社 API を結ぶ Schema 設計と Validation"
+    axis: multi-llm
+    priority: 2
+    status: pending
+
+  # ===== E. RAG / 知識注入 =====
+  - id: E-01
+    title: "pgvector なしの RAG — ドメイン辞書 × Markdown チャンクで軽量検索"
+    axis: rag
+    priority: 1
+    status: pending
+  - id: E-02
+    title: "サッカー戦術ナレッジをポジション別 / 年齢別に動的注入する Context Engine"
+    axis: rag
+    priority: 2
+    status: pending
+  - id: E-03
+    title: "Context Engine 5 層 — architecture / constraints / workflow / ci-cd / glossary"
+    axis: rag
+    priority: 1
+    status: pending
+  - id: E-04
+    title: "RAG の前に「プロンプト構造化」で精度がどこまで出るか"
+    axis: rag
+    priority: 2
+    status: pending
+
+  # ===== F. AI 駆動 CI/CD / DevOps =====
+  - id: F-01
+    title: "GitHub Issue → Claude Code → PR → Cloud Run まで Reusable Workflow で自動化"
+    axis: devops
+    priority: 1
+    status: pending
+  - id: F-02
+    title: "Issue Label 駆動の Agent dispatch — active / blocked / waiting-review を hook 遷移"
+    axis: devops
+    priority: 2
+    status: pending
+  - id: F-03
+    title: "Discord 通知 + Cloud Scheduler + GitHub Actions で「無人運営」する"
+    axis: devops
+    priority: 2
+    status: pending
+  - id: F-04
+    title: '「マージ済 ≠ 本番反映済」— deploy-verification skill で revision まで責任'
+    axis: devops
+    priority: 2
+    status: pending
+
+  # ===== G. Vision / マルチモーダル =====
+  - id: G-01
+    title: "Claude Vision でレシート OCR → 仕訳分類まで 1 プロンプトで通す"
+    axis: vision
+    priority: 1
+    status: pending
+  - id: G-02
+    title: "LINE 画像送信 → Webhook → Vision → Prisma → 確定申告 CSV E2E"
+    axis: vision
+    priority: 2
+    status: pending
+  - id: G-03
+    title: "Vision API の応答を Zod / Valibot で型検証する"
+    axis: vision
+    priority: 3
+    status: pending
+
+  # ===== H. AI Ops 独自路線 (moat 候補) =====
+  - id: H-01
+    title: "Cross-Department Event Bus — 成約 / 入金 / launch を JSONL で全部署が読む"
+    axis: ai-ops
+    priority: 1
+    status: pending
+  - id: H-02
+    title: "13 部署 director を state.md + cron 06:00/18:00 で自走させる"
+    axis: ai-ops
+    priority: 2
+    status: pending
+  - id: H-03
+    title: '「自立駆動型会社」マスター設計 — 47 Agent / L4-L7 / Phase 0-3 凍結の経緯'
+    axis: ai-ops
+    priority: 3
+    status: pending
+  - id: H-04
+    title: "MECE Audit Skill を Stop Hook に仕込んで docs の重複を CI で落とす"
+    axis: ai-ops
+    priority: 2
+    status: pending
+  - id: H-05
+    title: "SSOT Mandate — frontmatter id を unique にして docs を ADR-0011 に揃える"
+    axis: ai-ops
+    priority: 3
+    status: pending
+
+  # ===== I. プロンプト工学・堅牢化 =====
+  - id: I-01
+    title: "Rate Limit / Validation / Fallback の 3 層堅牢化を全 LLM 呼び出しで標準化"
+    axis: prompt
+    priority: 1
+    status: pending
+  - id: I-02
+    title: "503 リトライ + UI フォールバック案 — Gemini エラーをユーザに見せない"
+    axis: prompt
+    priority: 2
+    status: pending
+  - id: I-03
+    title: "Few-shot よりも Schema-shot — 出力 JSON を例示するよりスキーマで縛る"
+    axis: prompt
+    priority: 2
+    status: pending
+  - id: I-04
+    title: "「収束しないプロンプト」を見抜く 3 つのパターン — circuit breaker の発動"
+    axis: prompt
+    priority: 3
+    status: pending
+
+  # ===== J. 統合・経済圏 =====
+  - id: J-01
+    title: "LINE LIFF × Claude Vision × Stripe — 中小零細向け SaaS の最小構成"
+    axis: integration
+    priority: 1
+    status: pending
+  - id: J-02
+    title: "next-auth 5.0 + Firestore + Gemini — 個人開発でも作れる AI Concierge"
+    axis: integration
+    priority: 2
+    status: pending
+  - id: J-03
+    title: "Stripe Live を E2E ¥50 決済で全 webhook 通すまでの checklist"
+    axis: integration
+    priority: 2
+    status: pending
+  - id: J-04
+    title: "Cloud Run + Neon + Vercel + Firebase Hosting — 4 種混合インフラの選び分け"
+    axis: integration
+    priority: 3
+    status: pending

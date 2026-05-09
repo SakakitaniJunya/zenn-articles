@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  zenn-auto-post launchctl agent.
+
+  日常ツイートを CEO 承認なしで自動投稿する (2026-05-09 CEO 明示)。
+  draft-queue.jsonl から quality gate 通過分を 12:00 / 18:00 / 21:00 JST に投稿。
+
+  設置: 自宅 iMac (always-on-host)
+  詳細: docs/runbooks/always-on-host-inventory.md (Phase D)
+  停止: launchctl unload ~/Library/LaunchAgents/com.creanest.zenn-auto-post.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.creanest.zenn-auto-post</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>/Users/sakaki/project/zenn-articles/scripts/auto-post.sh</string>
+  </array>
+
+  <!-- 1 日 3 回: 12:00 / 18:00 / 21:00 JST -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>12</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>18</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>21</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/sakaki/project/zenn-articles</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/sakaki/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/sakaki/project/devops-hub/.claude/tweets/logs/auto-post.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/sakaki/project/devops-hub/.claude/tweets/logs/auto-post.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
