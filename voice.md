@@ -39,6 +39,63 @@ draft 生成時に必ず参照する。**逸脱した draft は reroll**。
 5. 次の記事への誘導
 ```
 
+## 品質バー (Mandatory — 1 つでも欠けたら reroll)
+
+> ⚠️ 「言っているだけで具体性が無い」記事は AI 量産の薄っぺらい記事として認識される。以下を**最低ライン**として必ず満たすこと。
+
+| 要素 | 最低数 | 例 |
+|---|---:|---|
+| **Mermaid 図** | **1+** | flowchart / sequenceDiagram / stateDiagram。ASCII 図ではなく必ず ` ```mermaid ` ブロックで書く |
+| **実コード断片** | **2+** | TypeScript / Bash / JSON 各 10-30 行、動く / 実 repo にあるものを引用 |
+| **file:line 引用** | **3+** | `pipeline-kit/ops/run-orchestrator.sh:415` のように実 path:line で根拠を示す |
+| **実測の数字** | **3+** | "884 TS/TSX ファイル"、"Cloud Run revision 64"、"35 分ハング" のような concrete data |
+| **Before / After 比較** | **1+** | 失敗談セクションで「壊れたコード」→「直したコード」の対比を必ず示す |
+
+### Mermaid 推奨パターン
+
+| 記事タイプ | 推奨図 |
+|---|---|
+| アーキテクチャ概観 | `flowchart TB` (Layer 図) |
+| 1 日 / 1 リクエストのフロー | `sequenceDiagram` |
+| Agent の状態遷移 | `stateDiagram-v2` |
+| 部署 / 機構の関係 | `flowchart LR` (左→右の DAG) |
+| 時系列 (Phase 移行) | `gantt` |
+
+例:
+
+```mermaid
+flowchart TB
+    A[trigger] --> B{condition}
+    B -->|yes| C[Action 1]
+    B -->|no| D[Action 2]
+```
+
+### 引用の書き方
+
+実コードを貼る場合は **必ず file:line を冒頭で示す**:
+
+```typescript
+// pipeline-kit/agents/prompts/_shared/project-namespace-protocol.md:42-58
+export type Project = {
+  id: string;
+  stage: "ideation" | "mvp" | "pmf" | "frozen";
+  ...
+};
+```
+
+「私はこう書いている」だけでは不十分。**「どこに置いてあるか」を示すと読者は repo を覗きに来る** = 連載全体の流入になる。
+
+### 数字の出典
+
+数字を出す場合、出典 / 確認方法を 1 行で添える:
+
+```
+TS/TSX ファイル数: 884 (`find App/ -name "*.ts*" | wc -l` 実測)
+Komyu Cloud Run revision: 64 (`gcloud run revisions list` で確認)
+```
+
+捏造は禁則。確証ない数字は出さない。
+
 ## 禁則
 
 - ❌ 「いかがでしたか?」「以上です」「最後までお読みいただきありがとうございました」 — Zenn では即離脱

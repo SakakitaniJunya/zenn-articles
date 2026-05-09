@@ -65,6 +65,28 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 文字数: **4,000 - 7,000 字** が目安 (Zenn の読了率最大ゾーン)。
 
+#### 品質バー (mandatory、1 つでも欠けたら自分で reroll する)
+
+`voice.md` の「品質バー」セクションを **書く前に必ず再 Read** し、以下を書ききる:
+
+- **Mermaid 図 1+ 個** — ASCII 図ではなく ` ```mermaid ` ブロック。`flowchart TB` / `sequenceDiagram` / `stateDiagram-v2` などから記事性質に合うものを選ぶ
+- **実コード断片 2+ 個** — TypeScript / Bash / JSON 各 10-30 行、`devops-hub` / `build-football` / `Komyu` / `keirai` 等の **実 repo から引用**。冒頭にコメントで `// pipeline-kit/ops/<file>:<line>` のように file:line を示す
+- **file:line 引用 3+ 箇所** — 「このパターンは `pipeline-kit/ops/run-orchestrator.sh:415` を見ると…」のように実 path:line を本文中で示す
+- **実測の数字 3+ 個** — "884 TS/TSX ファイル"、"Cloud Run revision 64"、"35 分ハング" のような concrete data。捏造禁止、出典 / 確認方法を 1 行添える
+- **Before / After 比較 1+ 個** — 失敗談セクションで「壊れたコード」→「直したコード」の対比
+
+「言っているだけで具体性が無い」記事は AI 量産の薄い記事として認識される。**50% 文字数を犠牲にしてでも具体性を取る**。
+
+#### 引用元リポジトリ (Read OK、`.claude/settings.json` で allowlist 済)
+
+| repo | 主な引用対象 |
+|---|---|
+| `devops-hub` | `pipeline-kit/ops/*.sh` (harness)、`pipeline-kit/agents/prompts/` (director)、`.claude/skills/`、`.claude/commands/`、`App/src/lib/mock-data/`、`docs/architecture/` |
+| `build-football` | `api/app/services/` (Multi-LLM Router、RAG ドメイン辞書) |
+| `keirai` | `src/` (Claude Vision OCR、LINE Bot) |
+| `Komyu` | `src/lib/ai/` (AI Concierge 4 層)、`apps/api/` (NestJS) |
+| `yomi-note` | Cloud Run + Firestore 統合 |
+
 #### frontmatter
 
 `frontmatter-spec.md` に従う:
