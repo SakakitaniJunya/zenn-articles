@@ -102,7 +102,7 @@ stateDiagram-v2
 
 devops-hub には 13 部署の director がいます (`/sales`, `/marketing`, `/cs` など)。最初、各部署の Evaluator を共通テンプレで揃えたら、**「sales の提案書を marketing 視点で評価し始める」** 事故が起きました。プロンプトに「全方位で評価してください」と書いたのが敗因。Evaluator は方位が固定されて初めて Evaluator として機能します。
 
-修正: 各部署ごとに `evaluationAspects` を明示列挙する設計に倒しました (実コード `pipeline-kit/agents/coordination/schema.ts:432-465`):
+修正: 各部署ごとに `evaluationAspects` を明示列挙する設計に倒しました (実コード `pipeline-kit/agents/departments/types.ts:390-410` の `SKILL_REGISTRY`、抜粋):
 
 ```typescript
 // 部署ごとに評価軸を fix する
@@ -231,7 +231,7 @@ export function checkImprovement(counts: number[], window: number): boolean {
 
 ポイントは **「直近 window+1 件のうち 1 件でも減少があれば改善とみなす」** という緩めの条件。厳しめにすると 1 ラウンドの揺れで escalation してしまうので、`window: 2` (= 直近 3 件) で 1 度でも下がっていれば継続、とする方針です。
 
-Evaluator は出力 schema を JSON で固定しているので、`critical` 件数を抽出するのは一瞬で済みます。Schema は `pipeline-kit/agents/departments/types.ts:85-97`:
+Evaluator は出力 schema を JSON で固定しているので、`critical` 件数を抽出するのは一瞬で済みます。Schema は `pipeline-kit/agents/departments/types.ts:85-97` の `DeptEvalResult`:
 
 ```json
 {
@@ -319,7 +319,7 @@ Phase 5: ContractSpecialist → 契約条件設計
 
 **Phase 4 が Evaluator**。Phase 1〜3 が Producer chain で、提案書ドラフトと価格戦略まで作った段階で `StrategyEval` が `evaluationAspects: ["criteria-completeness", "score-justification", "priority-ranking"]` の観点で `findings` を返す。`fail` なら ProposalWriter (chain の最後) が revise する、というのが 1 ラウンド。
 
-13 部署で **ぴったり同じ構造** が動いており (`pipeline-kit/agents/coordination/schema.ts` で各 dialog の `evaluationAspects` を 13 部署 × 平均 3〜4 dialog = 50 程度の dialog 定義として宣言)、guard は `convergence.ts` の 1 ファイルが全部見ています。
+13 部署で **ぴったり同じ構造** が動いており (`pipeline-kit/agents/departments/types.ts` の `SKILL_REGISTRY` に 100 skill / 307 aspect mention / 271 unique aspect を宣言)、guard は `convergence.ts` 1 ファイルが全部見ています。
 
 ## 7 段の開発パイプラインも同じガードで回している
 
@@ -473,21 +473,131 @@ OOP の SRP と同じで、1 Agent に「生成 + 評価」を乗せると、評
 
 13 部署 director が判断を出すたびにこのレコードが 1 件積まれて、後で `/ceo/genealogy <decision-id>` で因果鎖を遡れる。**「Evaluator が pass を返した瞬間 = decisions.jsonl に 1 行追加」**という配線にしてあるので、収束しなかった Dialog はそもそも記録に残らない、という運用です。これが Phase 1.5 の Decision Genealogy moat の前段に当たります (詳細は C-04 で別途)。
 
-## まだできていないこと
+## 残課題と、最低限の足場だけは実装した話
 
-正直に書きます。
+ここまで読むと「全部回ってるのか」と見えるかもしれませんが、実際は 3 つほど穴が空いています。記事公開と同時に、**穴を塞ぐところまでは行かないが、検出・観測・準備までは型と script で押さえる**という最小限のコミットを入れました。穴を「未着手」と書きっぱなしにしないのが、AI Ops の自家中毒を避けるコツだと思っています (`feedback_design_loop_circuit_breaker` memory)。
 
-### 残課題 1: Evaluator のキャリブレーションが甘い
+### 残課題 1: Evaluator のキャリブレーションが甘い → 校正 harness を追加
 
-`evaluationAspects` を観点列挙にしたとはいえ、`severity: "critical"` の判定基準は Evaluator のモデル依存で、**同じ入力に対して Opus と Sonnet で `critical` 件数が変わる**現象が起きます。今は Evaluator 全部を Opus に倒しているのでブレは少ないですが、コスト最適化のために Haiku を Evaluator に下ろしたい場合の校正手順は未確立。LLM-as-Judge のキャリブレーション手法は別記事 C-01 で深掘り予定です。
+`severity: "critical"` の判定基準は Evaluator のモデル依存で、**同じ入力に対して Opus / Sonnet / Haiku で `critical` 件数が変わる**現象が確認できています。今は全 Evaluator を Opus に倒しているのでブレは少ないですが、コスト最適化のため Haiku を Evaluator に下ろしたい場合の校正手順がありませんでした。
 
-### 残課題 2: Producer chain の依存関係が暗黙
+最低限の足場として、fixture-driven の calibration harness を追加しました。`pipeline-kit/agents/cli/eval-calibration.ts` (実物 250 行ほど):
 
-`producers: ["LeadScorer", "CRMAnalyst", "ProposalWriter"]` の順序は意味を持っているのに、その依存関係が型で表現されていません。今は director.md (Markdown) のドキュメント上で記述しているだけ。本来は型 (TypeScript) でグラフを宣言したいが未着手。
+```bash
+# fixture 数 + schema 検査だけ (API 課金ゼロ)
+$ pnpm tsx agents/cli/eval-calibration.ts
+# Evaluator Calibration Report
+generated_at: 2026-05-10T02:30:29.368Z
+fixtures: 3
+models: opus, sonnet
+mode: dry-run (fixture discovery only)
 
-### 残課題 3: 13 部署 × 約 50 dialog の Evaluator 観点が手書き
+# 実 API call (ANTHROPIC_API_KEY 必須、予算 cap あり)
+$ pnpm tsx agents/cli/eval-calibration.ts --run --models opus,sonnet,haiku
+```
 
-`evaluationAspects` を全 dialog で手書きしているので、**観点の MECE 性 / 重複 / 抜け** を機械的にチェックできていません。ここは LLM-as-Judge をメタにかけて「観点の品質を Evaluator する Evaluator」を作る案を温めていますが、再帰がもう 1 段増えるので未着手 (= AI Ops の自家中毒リスク、`feedback_design_loop_circuit_breaker` memory 参照)。
+Fixture は `pipeline-kit/agents/eval-fixtures/<aspect>/<case>.json` に置き、`{ input, context: { department, aspect } }` の形。同じ Creator 出力を複数 model にかけて `findings.filter(f => f.severity === "critical").length` の差分 (= **maxCriticalDelta**) を測ります。`delta >= 2` を「校正失敗」と判定して `miscalibratedCount` に積み上げる仕組みです。
+
+```typescript
+// pipeline-kit/agents/cli/eval-calibration.ts (要点)
+function computeMaxDelta(results: ModelResult[]): number {
+  if (results.length < 2) return 0;
+  const counts = results.map((r) => r.criticalCount);
+  return Math.max(...counts) - Math.min(...counts);
+}
+// avg < 1 / miscalibrated 0 件なら calibration 合格、Haiku に下ろせる
+```
+
+LLM-as-Judge のキャリブレーション手法そのもの (Krippendorff's alpha / Cohen's kappa への昇格、reasoning trace 比較) は別記事 C-01 で深掘り予定ですが、**「fixture を置けば差分が JSON で出る」状態**まではこの記事と同時に踏みました。
+
+### 残課題 2: Producer chain の依存関係が暗黙 → 型でグラフを宣言した
+
+`producers: ["LeadScorer", "CRMAnalyst", "ProposalWriter"]` の順序は意味を持っているのに、その依存関係は `string[]` で表現されているだけで、
+
+- 空配列を弾けない
+- 「最後の agent が synthesizer (revisionAgent)」という invariant がコメントレベル
+- Type S-1 Phase 3 の **並列実行** (ProposalWriter + PricingAnalyst) が flat array に潰されている
+
+という穴がありました。`pipeline-kit/agents/departments/producer-chain.ts` を新設して、これを型で殴ります。
+
+```typescript
+// pipeline-kit/agents/departments/producer-chain.ts (要点)
+/** 最低 1 producer 必須、empty array は型で禁止 */
+export type ProducerChain = readonly [string, ...string[]];
+
+export interface ProducerPhase {
+  readonly index: number;
+  readonly agents: ProducerChain;
+  readonly synthesizer: boolean; // chain の最後 = revisionAgent
+}
+
+export interface ProducerChainSpec {
+  readonly dialogId: string;
+  readonly phases: readonly ProducerPhase[];
+}
+```
+
+helper:
+
+```typescript
+// linear: ["A", "B", "C"] → 3 phase、最後が synthesizer
+chainFromLinear("d1-spec-review", ["A", "B", "C"]);
+
+// 並列対応: ["A", "B", ["C", "D"], "E"] → Phase 3 が並列
+chainFromMixed("type-s1", [
+  "LeadScorer",
+  "CRMAnalyst",
+  ["ProposalWriter", "PricingAnalyst"], // 並列
+  "StrategyEval",
+]);
+
+getSynthesizer(spec); // 必ず最終 phase の最後の agent を返す (= revisionAgent)
+validateChain(spec);  // 同 agent が複数 phase 出現 / synthesizer flag 位置不整合を throw
+toMermaid(spec);      // 記事 / dashboard 用 flowchart 自動生成
+```
+
+`validateChain` が拾うのは: 空 phase、synthesizer flag が最終 phase 以外にある、同 agent が複数 phase に登場する、の 3 種類。test は `producer-chain.test.ts:1-78` で 9 cases pass。**既存の `producers: string[]` を破壊せず、新規 dialog 定義から段階的に移行できる**設計にしました (= 100+ skill への一括移行は別 PR)。
+
+### 残課題 3: 100+ skill の Evaluator 観点が手書き → MECE checker を追加
+
+`evaluationAspects` は 13 部署 × 平均 5-6 skill (実数: **100 skills, 307 aspect mentions, 271 unique aspects**) で手書き定義しているので、**観点の MECE 性 / 重複 / 抜け** を目視ではもう追えません。`pipeline-kit/agents/cli/check-aspects-mece.ts` を追加して機械的に拾います:
+
+```bash
+$ pnpm tsx agents/cli/check-aspects-mece.ts
+# Evaluation Aspects MECE Report
+total_skills: 100
+total_aspect_mentions: 307
+unique_aspects: 271
+
+## warnings (8)
+  [cross-dept-overload] Aspect "accuracy" used in 4 departments (strategy, sales, cs, finance);
+                        rename per-domain or extract shared definition.
+  [cross-dept-overload] Aspect "consistency" used in 3 departments (strategy, marketing, finance); ...
+  [cross-dept-overload] Aspect "differentiation" used in 3 departments (strategy, marketing, sales); ...
+  [cross-dept-overload] Aspect "recency" used in 3 departments (strategy, marketing, pmo); ...
+  [cross-dept-overload] Aspect "methodology" used in 3 departments (strategy, sales, finance); ...
+  [cross-dept-overload] Aspect "timing" used in 3 departments (marketing, finance, pmo); ...
+  [cross-dept-overload] Aspect "calculation-accuracy" used in 3 departments (marketing, finance, pmo); ...
+  [cross-dept-overload] Aspect "completeness" used in 3 departments (cs, finance, pmo); ...
+
+## info (247)
+  [orphan-aspect] Aspect "data-completeness" used only once; check for typo or promote to shared vocabulary.
+  ...
+```
+
+検出してくれるのは 4 種類:
+
+| kind | 意味 |
+|---|---|
+| `cross-dept-overload` | 同名 aspect が 3 部署以上で使われている (= 概念ドリフトの疑い、`accuracy` のように domain ごとに意味が違うはず) |
+| `orphan-aspect` | 1 度しか使われていない (= typo か、共通語彙に昇格すべき) |
+| `under-specified` | 1 skill の aspect が 2 未満 (= Evaluator が信号不足) |
+| `over-coupled` | 1 skill の aspect が 6 超 (= 単一 Evaluator では薄まる) |
+| `intra-skill-duplicate` | 同一 skill 内で aspect 重複 |
+
+`--strict` を付ければ warning が 1 件でもあれば exit 1。CI に乗せれば「観点を雑に増やすと build が落ちる」状態になります (今回は warnings 8 件なので strict は導入後)。`--json` で機械可読、時系列比較も可。
+
+> **教訓**: 「LLM-as-Judge をメタにかけて観点の品質を評価する Evaluator」も検討しましたが、再帰がもう 1 段増えるので **静的解析で済むものは静的解析で殴る**方針に倒しました。`accuracy` が 4 部署で使われているのは、まさに「domain ごとに意味を再定義すべき」という人間の判断項目で、Evaluator 自動化に逃げる前に語彙設計をやり直すのが筋。
 
 ## まとめ — 1 行で覚えるなら
 
@@ -508,7 +618,7 @@ devops-hub の `pipeline-kit/agents/guards/convergence.ts` は 128 行しかあ�
 
 → **B-03 [7 Agent 開発パイプライン (PMA → DocsA → DevA → RevA → EvalA → TestA → CIA)](./)** (準備中) — 開発側の Creator/Evaluator 配線を順番に見ます
 
-→ **C-01 [LLM-as-Judge — Evaluator のキャリブレーション](./)** (準備中) — 残課題 1 で書いた評価軸の安定化
+→ **C-01 [LLM-as-Judge — Evaluator のキャリブレーション](./)** (準備中) — 残課題 1 で実装した `eval-calibration.ts` を Krippendorff's alpha / Cohen's kappa に昇格させる話
 
 連載を見逃さない方法:
 
