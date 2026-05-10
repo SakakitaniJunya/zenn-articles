@@ -13,7 +13,7 @@ review_status: "draft"
 
 > **Disclaimer**: 本記事は著者が個人 (副業) で運営する小規模プロジェクト群 (CreaNest 名義) の技術記録です。所属組織・本業の業務内容とは一切関係ありません。記載の数値・構成は執筆時点 (2026-05) の自宅検証環境のスナップショットであり、商用品質や SLA を保証するものではありません。
 
-pgvector / Pinecone / Qdrant のどれも入れずに、Markdown チャンク + キーワードスコアリング + ドメイン辞書 (技術 / 戦術 / フィジカル / メンタル の 4 軸) で **ナレッジ 18 件 + 練習ドリル 18 件 + ポジション 7 種 + 発達段階 6 区分 + Markdown 16 ファイル** から動的にコンテキストを生成しています。サッカー練習ノート × AI 振り返り SaaS「Soccer Note」(`build-football` repo) で実稼働しているコードを、そのまま file:line で引きます。
+pgvector / Pinecone / Qdrant のどれも入れずに、Markdown チャンク + キーワードスコアリング + ドメイン辞書 (技術 / 戦術 / フィジカル / メンタル の 4 軸) で **ナレッジ 19 件 + 練習ドリル 18 件 + ポジション 7 種 + 発達段階 6 区分 + Markdown 16 ファイル (= 163 chunk)** から動的にコンテキストを生成しています。サッカー練習ノート × AI 振り返り SaaS「Soccer Note」(`build-football` repo) で実稼働しているコードを、そのまま file:line で引きます。
 
 > 用語: **Soccer Note** = 育成年代向けのサッカー練習ノート SaaS。選手が日々のノートを書くと、3 プロバイダ (OpenAI / Anthropic / Google) で振り返りコメントが自動生成されるサービス。Team プラン ¥1,980/月でリリース予定。本記事の RAG はその「振り返りコメント」生成プロンプトに注入されるコンテキストの話。
 
@@ -23,14 +23,17 @@ pgvector / Pinecone / Qdrant のどれも入れずに、Markdown チャンク + 
 
 ただ、実際に小規模プロダクト (MAU 数百から始まる育成年代 SaaS) で運用してみると、ベクトル DB の **運用コスト** が割に合いません。Embedding 課金 + ベクトル DB 課金 + ノイズの多い上位ヒット + チャンク粒度のチューニング地獄。私は最初の設計で pgvector を採用したものの、**3 週間後に退役** しました。
 
-この記事は「**ドメイン辞書 × Markdown chunk × キーワードスコア** で済むなら、ベクトル化前にそこで勝て」という主張を、Soccer Note の実コードで証明する記録です。**ASCII 図でなく Mermaid、抽象論でなく実 file:line、抽象的な強さでなく実測の数字** で並べます。
+この記事は「**ドメイン辞書 × Markdown chunk × キーワードスコア + 非 LLM reranker** で済むなら、ベクトル化前にそこで勝て」という主張を、Soccer Note の実コードで証明する記録です。**ASCII 図でなく Mermaid、抽象論でなく実 file:line、抽象的な強さでなく実測の数字** で並べます。
 
-## 結論 (4 行)
+> **Note (2026-05-10 改訂)**: 初版で「残課題」として残していた 4 項目 (チャンク粒度 / 再ランキング / ナレッジ更新フロー / 多言語化) のうち、3 項目を構造ごと潰して 1 項目を「LLM 不使用の lexical reranker」に置き換えました。差分は本記事末尾「v2 アップデート」と本文 file:line に反映済みです。
+
+## 結論 (5 行)
 
 - ナレッジが「閉じたドメイン (= 専門用語が有限)」なら、**TypedDict ベースのドメイン辞書 + Markdown chunk + キーワードスコア** で十分高品質な RAG が組める
-- スコアリングは「**キーワード完全一致 +10 / タイトル一致 +5 / 本文一致 +2**」の 3 段階だけで意味検索を超えるノイズ抑制を実現
+- スコアリングは「**キーワード完全一致 +10 / タイトル一致 +5 / 本文一致 +2**」の 3 段階。さらに **非 LLM reranker (title hit / section affinity / position / age / diversity)** を後段に置けば、LLM コール 0 で精度が伸ばせる
 - prompt への注入は **ポジション × 年齢 × ノート内容** の 3 軸で動的に切り替え、汎用 prompt を捨てる
 - ベクトル DB が必要になるのは「ドメイン辞書では拾いきれない自然言語の揺らぎが顕在化した時」だけ。**まず辞書で殴る、足りなくなったら embedding を足す** が正しい順序
+- ナレッジ拡張・多言語化は **YAML frontmatter Markdown と `keywords/<lang>.yaml`** に外出しすれば、Python 編集なしでコーチが追記できる
 
 ## 問題 — なぜ pgvector を退役させたか
 
@@ -60,7 +63,7 @@ Soccer Note の Team プラン ¥1,980/月で、1 チーム月 100 ノート程�
 
 3 週間で「これは戦う土俵を間違えている」と判断、退役しました。
 
-## 解法 — ドメイン辞書 × Markdown chunk × キーワードスコア
+## 解法 — ドメイン辞書 × Markdown chunk × キーワードスコア × 非 LLM reranker
 
 退役後の設計はこうです。
 
@@ -71,37 +74,42 @@ flowchart LR
     classDef out fill:#e8f5e9,stroke:#2e7d32
 
     Q["Note Content<br/>(theme/achievements/<br/>improvements/nextFocus)"]:::src
-    KW[キーワード抽出<br/>SOCCER_KEYWORDS<br/>+ 辞書 keywords]:::proc
+    KW["キーワード抽出<br/>keywords/&lt;lang&gt;.yaml<br/>+ 辞書 keywords"]:::proc
 
-    D1["TECHNICAL<br/>(8 entry)"]:::src
-    D2["TACTICAL<br/>(5 entry)"]:::src
-    D3["PHYSICAL<br/>(2 entry)"]:::src
-    D4["MENTAL<br/>(3 entry)"]:::src
+    D1["TECHNICAL<br/>(8 entry, Python)"]:::src
+    D2["TACTICAL<br/>(5 entry, Python)"]:::src
+    D3["PHYSICAL<br/>(2 entry, Python)"]:::src
+    D4["MENTAL<br/>(3 entry, Python)"]:::src
+    DY["dict/&lt;cat&gt;/*.md<br/>(YAML frontmatter)"]:::src
     D5["PRACTICE_DRILLS<br/>(18 entry)"]:::src
     D6["POSITION_GUIDES<br/>(7 position)"]:::src
     D7["AGE_DEVELOPMENT_GUIDE<br/>(6 stage)"]:::src
-    D8["knowledge_base/*.md<br/>(16 file)"]:::src
+    D8["knowledge_base/*.md<br/>(16 file → 163 chunk)"]:::src
 
-    SCORE["score = match × weight<br/>(keyword 10 / title 5 / content 2)"]:::proc
+    SCORE["1st pass score<br/>keyword 10 / title 5 / content 2"]:::proc
+    RR["LexicalReranker<br/>title / section affinity /<br/>position / age / diversity"]:::proc
     TOPK[top-k 抽出]:::proc
 
     PROMPT["build_context()<br/>動的プロンプト"]:::out
 
     Q --> KW
-    KW --> D1 & D2 & D3 & D4 & D5 & D8
+    KW --> D1 & D2 & D3 & D4 & DY & D5 & D8
     D6 -.position arg.-> PROMPT
     D7 -.age arg.-> PROMPT
+    DY -.merge by id.-> D1
     D1 & D2 & D3 & D4 & D5 & D8 --> SCORE
-    SCORE --> TOPK
+    SCORE --> RR
+    RR --> TOPK
     TOPK --> PROMPT
 ```
 
-要点 4 つ:
+要点 5 つ:
 
 1. **ナレッジソースを 8 個に分割** — 4 軸辞書 + 練習ドリル + ポジション + 年齢発達 + Markdown chunk。各々が固有の構造を持つ
-2. **キーワード抽出は「閉じた語彙」** — `SOCCER_KEYWORDS` という凍結 set を持っており、ここに無い語は無視する
+2. **キーワード抽出は「閉じた語彙」だが外出し** — `keywords/<lang>.yaml` に YAML で外出し、`KnowledgeRetriever(lang="ja")` で言語切替
 3. **スコアリングは 3 段階加重和** — embedding なし、cosine なし
-4. **prompt 注入は build_context() が責任を持つ** — note × position × age の 3 軸で出力テキストを変える
+4. **後段 reranker は LLM 不使用** — title hit / section affinity / position / age / diversity decay の 6 信号で並べ替え、microsec 級
+5. **辞書 entry は Markdown + YAML frontmatter で拡張可能** — Python 編集不要、`dict/<category>/*.md` を置くだけ
 
 ### ドメイン辞書の階層
 
@@ -111,26 +119,28 @@ flowchart TB
     classDef tact fill:#fff3e0,stroke:#e65100
     classDef phys fill:#fce4ec,stroke:#ad1457
     classDef ment fill:#f3e5f5,stroke:#6a1b9a
+    classDef yaml fill:#e8f5e9,stroke:#2e7d32
 
     K["KnowledgeEntry<br/>(TypedDict)"]
 
-    subgraph TECHNICAL [TECHNICAL 8 entry]
-        T1[ファーストタッチの原則]:::tech
+    subgraph TECHNICAL [TECHNICAL 8 entry + α]
+        T1[ファーストタッチ]:::tech
         T2[ボール受けの体の向き]:::tech
-        T3[ドリブルの種類と使い分け]:::tech
-        T4[フェイント・テクニック]:::tech
-        T5[パス精度の基本]:::tech
-        T6[発展的なパス技術]:::tech
-        T7[シュートの基本]:::tech
-        T8[ヘディングの基本]:::tech
+        T3[ドリブルの種類]:::tech
+        T4[フェイント]:::tech
+        T5[パス精度]:::tech
+        T6[発展的なパス]:::tech
+        T7[シュート]:::tech
+        T8[ヘディング]:::tech
+        TY["dict/technical/<br/>sample_cut_in.md (YAML)"]:::yaml
     end
 
     subgraph TACTICAL [TACTICAL 5 entry]
-        TA1[オフザボールの動き]:::tact
-        TA2[ポジショニングの原則]:::tact
-        TA3[プレッシングの原則]:::tact
+        TA1[オフザボール]:::tact
+        TA2[ポジショニング]:::tact
+        TA3[プレッシング]:::tact
         TA4[1対1の守備]:::tact
-        TA5[ビルドアップの基本]:::tact
+        TA5[ビルドアップ]:::tact
     end
 
     subgraph PHYSICAL [PHYSICAL 2 entry]
@@ -152,7 +162,7 @@ flowchart TB
 
 各 entry は同じ TypedDict のスキーマを共有しています。これが後で大きく効きます。
 
-`build-football/App/backend/app/features/ai/infrastructure/knowledge/soccer_knowledge.py:14-26`:
+[`build-football/App/backend/app/features/ai/infrastructure/knowledge/soccer_knowledge.py:14-26`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/ai/infrastructure/knowledge/soccer_knowledge.py#L14-L26):
 
 ```python
 class KnowledgeEntry(TypedDict):
@@ -171,54 +181,85 @@ class KnowledgeEntry(TypedDict):
 
 ポイントは `keywords` と `age_relevance` の 2 フィールド。**embedding を持たない代わりに、検索のためのメタデータをコードの中に直接書く** という思想です。
 
-### 4 軸 × Entry の実体
+### Python TypedDict と YAML frontmatter の二重路線
 
-各軸が何件入っているかは前述の通り (TECHNICAL 8 / TACTICAL 5 / PHYSICAL 2 / MENTAL 3)。中身の例を抜粋します。
+`TECHNICAL_KNOWLEDGE` 等は引き続き Python に書きますが、それと **同じ TypedDict 形** をコーチが Markdown 1 枚で追加できるようにしました。
 
-`soccer_knowledge.py:32-72` (TECHNICAL の最初の entry):
+`knowledge_base/dict/technical/sample_cut_in.md` (実ファイル):
 
-```python
-TECHNICAL_KNOWLEDGE: list[KnowledgeEntry] = [
-    {
-        "id": "tech_first_touch",
-        "category": "technical",
-        "subcategory": "ball_control",
-        "title": "ファーストタッチの原則",
-        "content": """
-ファーストタッチは次のプレーの準備。単に止めるのではなく、
-次のプレー (パス、ドリブル、シュート) に最適な位置にボールを置くこと。
+```markdown
+---
+id: tech_cut_in
+category: technical
+subcategory: dribble
+title: カットインの基本
+keywords:
+  - カットイン
+  - ウイング
+  - 利き足
+  - 1対1
+coaching_points:
+  - 縦を意識させてから内側へ切る
+  - 利き足側に運びシュートかパスの両択を持つ
+  - 相手の重心が外に流れた瞬間を狙う
+common_mistakes:
+  - 早く内に切りすぎて DF が読みやすい
+  - シュート視野を作らずパス一択になる
+practice_tips:
+  - コーン 1 本を SB 役に見立てた 1 対 1
+  - サイドから受ける → カットイン → ファー側枠内シュート
+age_relevance:
+  U10: 導入
+  U12: 重要
+  U15: 必須
+---
 
-【ファーストタッチの3原則】
-1. ボールを見る - 最後まで目を離さない
-2. 面を作る - インサイド、アウトサイド、足裏で適切な面を作る
-3. クッション - 足を引いてボールの勢いを吸収する
-""",
-        "coaching_points": [
-            "ボールが来る前に周りを見る習慣をつける",
-            "「止める」ではなく「次のプレーにつなげる」と教える",
-            "利き足だけでなく両足で練習する",
-        ],
-        "common_mistakes": [
-            "ボールから目を離して周りを見てしまう",
-            "足を硬くしてボールを弾いてしまう",
-        ],
-        "practice_tips": [
-            "壁当て: 様々な角度からボールを返して練習",
-        ],
-        "keywords": ["トラップ", "ファーストタッチ", "止める", "コントロール", "受ける", "オリエンタード"],
-        "age_relevance": {"U8": "基礎", "U10": "重要", "U12": "必須", "U15": "発展"},
-    },
-    # ... 残り 7 entry
-]
+# カットインの基本
+
+## 状況
+サイドで縦突破を見せながら内側にボールを切り返し...
 ```
 
-`keywords` は **6-7 個に絞り込む** のが運用のコツです。10 個以上に増やすと「シュート」「決定力」「ゴール」が全部のシュート系 entry にぶら下がって、スコアが拮抗してノイズが増えます。
+起動時にこの Markdown を `KnowledgeEntry` として読み、Python 側のビルトインに **id 一致なら上書き / なければ追加** で merge します。
+
+[`App/backend/app/features/knowledge/infrastructure/dict_loader.py:65-97`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/infrastructure/dict_loader.py#L65-L97):
+
+```python
+class DictKnowledgeLoader:
+    """Load TypedDict-shaped knowledge entries from Markdown + YAML files."""
+
+    def __init__(self, base_path: Path | None = None) -> None:
+        self.base_path = base_path or DEFAULT_DICT_PATH
+
+    def load_all(self) -> list["KnowledgeEntry"]:
+        if not self.base_path.exists():
+            return []
+
+        entries: list["KnowledgeEntry"] = []
+        for md_file in self.base_path.rglob("*.md"):
+            if md_file.name == "README.md":
+                continue
+            entry = self._load_file(md_file)
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    @staticmethod
+    def merge(builtin, external):
+        """External 側 (YAML) が同 id を上書き — コーチが built-in を訂正できる."""
+        by_id = {e["id"]: e for e in builtin}
+        for entry in external:
+            by_id[entry["id"]] = entry
+        return list(by_id.values())
+```
+
+merge 戦略の意図: **コーチが built-in entry を「ここのコーチング・ポイントは違う」と直したくなった時、Python に PR を出させずに `dict/<cat>/<id>.md` を 1 枚置けば上書きできる**。これがナレッジ運用のスループットを決めます。
 
 ### TACTICAL は「概念」を入れる
 
 戦術系は「ポジショナルプレー」「5 レーン理論」「矢印理論」のような **抽象概念** を入れます。
 
-`soccer_knowledge.py:506-555` (POSITIONING entry の抜粋):
+[`soccer_knowledge.py:506-555`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/ai/infrastructure/knowledge/soccer_knowledge.py#L506-L555) (POSITIONING entry の抜粋):
 
 ```python
 {
@@ -236,14 +277,6 @@ TECHNICAL_KNOWLEDGE: list[KnowledgeEntry] = [
 - 中央
 - 右ハーフスペース
 - 右サイド
-
-【ポジショニングの原則】
-1. トライアングル (三角形) を作る
-   - ボール保持者に対して2つ以上のパスコース
-2. ライン間を取る
-   - 相手DFラインとMFラインの間
-3. 幅と深さ
-   - サイドに幅を取る選手、前後に深さを取る選手
 """,
     "keywords": [
         "ポジショニング", "立ち位置", "トライアングル",
@@ -257,14 +290,15 @@ TECHNICAL_KNOWLEDGE: list[KnowledgeEntry] = [
 
 ## ポジション × 年齢のマトリクス注入
 
-ここからが本記事のキモ。「**ノート → 検索結果**」だけでなく「**選手のポジション と 年齢で prompt を変える**」のが Soccer Note の RAG の特徴です。
+ここからが本記事のキモ。「**ノート → 検索結果**」だけでなく「**選手のポジションと年齢で prompt を変える**」のが Soccer Note の RAG の特徴です。
 
 ```mermaid
 sequenceDiagram
     participant U as Note Owner (選手)
     participant API as /api/notes/{id}/comment
     participant R as KnowledgeRetriever
-    participant D as Domain Dict
+    participant D as Domain Dict (Python + YAML)
+    participant RR as LexicalReranker
     participant P as POSITION_GUIDES
     participant A as AGE_DEVELOPMENT_GUIDE
     participant L as LLM (GPT-4o)
@@ -273,18 +307,21 @@ sequenceDiagram
     API->>R: build_context(note, position="WG", age="U12")
 
     R->>R: extract_keywords(combined_text)
-    Note over R: SOCCER_KEYWORDS (110+語) と<br/>辞書 keywords を全比較<br/>上位 15 件を返す
+    Note over R: keywords/ja.yaml (117 語) と<br/>辞書 keywords を全比較
 
-    R->>D: get_knowledge_by_keywords(keywords, max=3)
-    D-->>R: top-3 KnowledgeEntry
+    R->>D: 1st pass: keyword/title/content score
+    D-->>R: 候補 max_results × 3 件
+
+    R->>RR: rerank(candidates, RerankContext{position, age})
+    RR-->>R: top-k chunk (LLM 不使用)
 
     R->>P: get_position_advice("WG")
-    P-->>R: PositionGuide (WG = ウィング)
+    P-->>R: PositionGuide
 
     R->>A: get_age_appropriate_advice("U12")
-    A-->>R: AgeDevelopmentGuide (U12 = ゴールデンエイジ後期)
+    A-->>R: AgeDevelopmentGuide
 
-    R->>R: 4 セクション結合<br/>(知識 / 練習 / position / age)
+    R->>R: 4 セクション結合
     R-->>API: rag_context (string)
 
     API->>L: SYSTEM + rag_context + user prompt
@@ -294,7 +331,7 @@ sequenceDiagram
 
 ### ポジション側 — 7 種類の `PositionGuide`
 
-`build-football/App/backend/app/features/ai/infrastructure/knowledge/position_guide.py:11-27`:
+[`build-football/App/backend/app/features/ai/infrastructure/knowledge/position_guide.py:11-27`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/ai/infrastructure/knowledge/position_guide.py#L11-L27):
 
 ```python
 class PositionGuide(TypedDict):
@@ -312,102 +349,40 @@ class PositionGuide(TypedDict):
     mental_requirements: list[str]
     common_mistakes: list[str]
     development_path: str
-    role_models: list[str]  # 参考になる選手例
+    role_models: list[str]
 ```
 
-`POSITION_GUIDES` には **GK / CB / SB / DMF / AMF / WG / CF の 7 entry** が登録されています (`position_guide.py:29-491`)。例えば WG (ウィング) ならこうです (抜粋):
+`POSITION_GUIDES` には **GK / CB / SB / DMF / AMF / WG / CF の 7 entry** が登録。WG (ウィング) の例 (抜粋):
 
 ```python
 "WG": {
-    "position_id": "WG",
     "position_name": "ウィング",
-    "description": "ウィングはサイドからの突破を担う。ドリブル、クロス、カットインで...",
     "technical_focus": [
         "ドリブル技術 (フェイント)",
         "正確なクロス",
         "カットインからのシュート",
-        "緩急のあるドリブル",
-    ],
-    "tactical_focus": [
-        "縦に行く or 中に切る判断",
-        "相手SBとの駆け引き",
     ],
     "common_mistakes": [
         "毎回同じ仕掛け方",
         "守備に戻らない",
-        "クロスの精度が低い",
     ],
     "role_models": ["ヴィニシウス", "サラー", "三笘薫", "伊東純也"],
 }
 ```
 
-ポジション解決は **別名にも対応した辞書ルックアップ**。「ウィング」「WG」「RW」「LW」「サイドハーフ」「SH」 全部 WG にマップします (`position_guide.py:494-536`):
-
-```python
-def get_position_advice(position: str) -> PositionGuide | None:
-    """ポジションに応じたアドバイスを取得."""
-    position_map = {
-        "GK": "GK", "ゴールキーパー": "GK", "GOALKEEPER": "GK",
-        "CB": "CB", "センターバック": "CB", "DF": "CB",
-        "SB": "SB", "サイドバック": "SB", "RB": "SB", "LB": "SB",
-        "DMF": "DMF", "ボランチ": "DMF", "CDM": "DMF", "MF": "DMF",
-        "AMF": "AMF", "トップ下": "AMF", "CAM": "AMF",
-        "WG": "WG", "ウィング": "WG", "RW": "WG", "LW": "WG",
-        "サイドハーフ": "WG", "SH": "WG",
-        "CF": "CF", "FW": "CF", "フォワード": "CF",
-        "ストライカー": "CF", "ST": "CF",
-    }
-    normalized = position_map.get(position.upper(), position.upper())
-    return POSITION_GUIDES.get(normalized)
-```
-
-これは **fuzzy match を embedding でやらないために、人間が手で書く正規化辞書** という割り切りです。Levenshtein でも n-gram でもなく、**愚直な alias map** が最も保守しやすい。
+ポジション解決は **別名にも対応した辞書ルックアップ**。「ウィング」「WG」「RW」「LW」「サイドハーフ」「SH」全部 WG にマップします。Levenshtein でも n-gram でもなく、**愚直な alias map** が最も保守しやすい。
 
 ### 年齢側 — 6 区分の `AgeDevelopmentGuide`
 
-`build-football/App/backend/app/features/ai/infrastructure/knowledge/age_development.py:11-26`:
-
-```python
-class AgeDevelopmentGuide(TypedDict):
-    """年齢別発達ガイドの型定義."""
-    age_category: str
-    age_range: str
-    development_stage: str
-    development_stage_description: str
-    physical_characteristics: list[str]
-    cognitive_characteristics: list[str]
-    social_emotional: list[str]
-    training_focus: list[str]
-    skill_priorities: list[str]
-    coaching_approach: list[str]
-    common_mistakes_by_coaches: list[str]
-    sample_session_structure: str
-    ratio_play_vs_drill: str  # "70:30"のような形式
-```
-
-`AGE_DEVELOPMENT_GUIDE` には **U6 / U8 / U10 / U12 / U15 / U18 の 6 entry** が入っています。U12 (ゴールデンエイジ後期) の例 (`age_development.py:224-287`):
+`AGE_DEVELOPMENT_GUIDE` には **U6 / U8 / U10 / U12 / U15 / U18 の 6 entry**。U12 (ゴールデンエイジ後期):
 
 ```python
 "U12": {
-    "age_category": "U12",
-    "age_range": "11-12歳",
     "development_stage": "ゴールデンエイジ後期",
-    "training_focus": [
-        "技術の精度向上",
-        "個人戦術の導入",
-        "グループ戦術の基礎",
-        "試合での判断力",
-    ],
-    "skill_priorities": [
-        "高い精度のボールコントロール",
-        "状況に応じたパス選択",
-        "1対1の攻守 (判断含む)",
-        "オフザボールの動き",
-    ],
+    "training_focus": ["技術の精度向上", "個人戦術の導入", ...],
     "coaching_approach": [
         "「なぜ」を考えさせる指導",
         "選手に判断させる",
-        "失敗を成長の機会に",
         "ポジション固定はまだ避ける",
     ],
     "ratio_play_vs_drill": "55:45",
@@ -416,101 +391,105 @@ class AgeDevelopmentGuide(TypedDict):
 
 「U12 のノートに対しては『なぜ』を考えさせるアプローチで返答する」「ポジション固定を勧めない」という **指導方針が prompt に注入される** わけです。これは embedding ではどう頑張っても出ない情報です。
 
-### 年齢の正規化も愚直に
+## キーワード抽出 — 言語別に外出し (i18n 対応)
 
-age 解決は範囲指定も含めて愚直 (`age_development.py:427-462`):
+初版では `SOCCER_KEYWORDS` を Python の凍結 set として retriever.py に直書きしていました。今は **`keywords/<lang>.yaml`** に外出し、`KnowledgeRetriever(lang="ja")` で言語切替できます。
 
-```python
-def get_age_appropriate_advice(age_category: str) -> AgeDevelopmentGuide | None:
-    """年齢カテゴリに応じたアドバイスを取得."""
-    normalized = age_category.upper().replace("-", "")
+`build-football/App/backend/app/features/knowledge/infrastructure/knowledge_base/keywords/ja.yaml` (抜粋):
 
-    if normalized in AGE_DEVELOPMENT_GUIDE:
-        return AGE_DEVELOPMENT_GUIDE[normalized]
-
-    # 年齢から推測 (U7 なら U8 へ、U13 なら U15 へ)
-    try:
-        if normalized.startswith("U"):
-            age = int(normalized[1:])
-            if age <= 6:
-                return AGE_DEVELOPMENT_GUIDE["U6"]
-            elif age <= 8:
-                return AGE_DEVELOPMENT_GUIDE["U8"]
-            elif age <= 10:
-                return AGE_DEVELOPMENT_GUIDE["U10"]
-            elif age <= 12:
-                return AGE_DEVELOPMENT_GUIDE["U12"]
-            elif age <= 15:
-                return AGE_DEVELOPMENT_GUIDE["U15"]
-            else:
-                return AGE_DEVELOPMENT_GUIDE["U18"]
-    except ValueError:
-        pass
-    return None
+```yaml
+technical:
+  - トラップ
+  - ファーストタッチ
+  - ドリブル
+  - カットイン
+  - シザース
+  - シュート
+  - ボレー
+defense:
+  - 守備
+  - プレス
+  - 同サイド圧縮
+  - ハイプレス
+tactical:
+  - オフザボール
+  - ポジショナルプレー
+  - 5レーン
+  - ハーフスペース
+  - 矢印理論
+  - 数的優位
+position:
+  - センターバック
+  - WG
+  - ウイング
+  - SH
+age:
+  - U6
+  - U8
+  - U10
+  - U12
+  - U15
+  - U18
+# ... mental / goalkeeper / set_piece / physical
 ```
 
-「U7」も「U13」もユーザは入れてくる。**範囲端で代替する** だけのコードですが、これが「データ無し」を防いで coverage を確保します。
+セクション (`technical` / `tactical` / ...) は単なる分類タグではなく、**後段 reranker の "section affinity" 信号にも流用** されます。query keyword が `tactical` セクションに属していて chunk の category も `tactical` なら、reranker がボーナスを足す。
 
-## キーワード抽出 — 閉じた set + 動的キーワード
-
-`build-football/App/backend/app/features/ai/infrastructure/knowledge/retriever.py:72-115` の `SOCCER_KEYWORDS` set は固定リストです (技術系 / 守備系 / 戦術系 / フィジカル系 / メンタル系 / GK 系 / ポジション系 / セットプレー / 年齢の **9 カテゴリ × 110 語超**):
+[`App/backend/app/features/knowledge/infrastructure/keywords_loader.py:46-87`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/infrastructure/keywords_loader.py#L46-L87):
 
 ```python
-SOCCER_KEYWORDS = {
-    # 技術系
-    "トラップ", "ファーストタッチ", "コントロール", "止める", "受ける",
-    "ドリブル", "運ぶ", "抜く", "フェイント", "カットイン", "シザース",
-    "ダブルタッチ", "ステップオーバー", "マシューズ", "1対1", "突破",
-    "パス", "インサイド", "インステップ", "スルーパス", "くさび", "縦パス",
-    "ワンタッチ", "ダイレクト", "クロス", "ロングパス",
-    "シュート", "ボレー", "ヘディング", "ゴール", "決定力", "枠内",
+def load_keywords(lang: str = "ja", base_path: Path | None = None) -> KeywordSet:
+    base = base_path or DEFAULT_KEYWORDS_DIR
+    file_path = base / f"{lang}.yaml"
+    if not file_path.exists():
+        return KeywordSet(lang=lang)
 
-    # 戦術系
-    "オフザボール", "動き出し", "サポート", "裏抜け", "ポジショニング",
-    "トライアングル", "ビルドアップ", "前進", "展開", "判断",
-    "ポジショナルプレー", "5レーン", "ハーフスペース", "矢印理論",
+    raw = yaml.safe_load(file_path.read_text(encoding="utf-8")) or {}
 
-    # ... メンタル / GK / ポジション / 年齢 (合計 110 語超)
-}
+    by_section: dict[str, frozenset[str]] = {}
+    flat: set[str] = set()
+    for section, words in raw.items():
+        if not isinstance(words, list):
+            continue
+        cleaned = {str(w).strip() for w in words if str(w).strip()}
+        by_section[str(section)] = frozenset(cleaned)
+        flat.update(cleaned)
+
+    return KeywordSet(lang=lang, flat=frozenset(flat), by_section=by_section)
 ```
 
-抽出ロジックは substring match で十分 (`retriever.py:198-223`):
+新言語を足すには **`en.yaml` を置くだけ**。Python 編集ゼロ、再デプロイ不要 (起動時 1 回読み込み)。
+
+抽出ロジックは substring match で十分:
 
 ```python
 def extract_keywords(self, text: str) -> list[str]:
-    """テキストからサッカー関連のキーワードを抽出."""
     if not text:
         return []
-
-    found_keywords = []
+    found_keywords: list[str] = []
     text_lower = text.lower()
 
-    # 1. 固定 set とのマッチ
-    for keyword in SOCCER_KEYWORDS:
+    for keyword in self.keywords:  # YAML 由来 + フォールバック
         if keyword.lower() in text_lower:
             found_keywords.append(keyword)
 
-    # 2. ナレッジ entry の keywords からも抽出
-    #    (固定 set に無い専門用語をカバー)
+    # ナレッジ entry の keywords からも抽出
     for entry in self._all_knowledge:
         for kw in entry["keywords"]:
             if kw.lower() in text_lower and kw not in found_keywords:
                 found_keywords.append(kw)
-
-    return found_keywords[:15]  # 上位15件
+    return found_keywords[:15]
 ```
 
-ポイントは 2 段階構成。**固定 set だけだと拾い漏れる** ので、ナレッジ entry 自身が宣言した keywords も再収集に使う。これで「set に無いがナレッジ側で追加された語」もカバーします。
+固定 set だけだと拾い漏れる語を、ナレッジ entry 自身が宣言した keywords でカバーする 2 段構成です。
 
 ## スコアリング — embedding なしで意味を取る方法
 
-検索の心臓部 (`retriever.py の get_knowledge_by_keywords は soccer_knowledge.py:971-1009`):
+検索の心臓部 (`get_knowledge_by_keywords` は [`soccer_knowledge.py:971-1009`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/ai/infrastructure/knowledge/soccer_knowledge.py#L971-L1009)):
 
 ```python
-def get_knowledge_by_keywords(keywords: list[str], max_results: int = 5) -> list[KnowledgeEntry]:
-    """キーワードに基づいて関連する知識エントリを取得."""
+def get_knowledge_by_keywords(keywords: list[str], max_results: int = 5):
     all_knowledge = TECHNICAL_KNOWLEDGE + TACTICAL_KNOWLEDGE + PHYSICAL_KNOWLEDGE + MENTAL_KNOWLEDGE
-
     scored_entries: list[tuple[KnowledgeEntry, int]] = []
 
     for entry in all_knowledge:
@@ -521,15 +500,12 @@ def get_knowledge_by_keywords(keywords: list[str], max_results: int = 5) -> list
 
         for keyword in keywords:
             keyword_lower = keyword.lower()
-            # キーワードリストに完全一致
             if keyword_lower in entry_keywords:
-                score += 10
-            # タイトルに含まれる
+                score += 10  # キーワード完全一致
             if keyword_lower in entry_title:
-                score += 5
-            # コンテンツに含まれる
+                score += 5   # タイトル一致
             if keyword_lower in entry_content:
-                score += 2
+                score += 2   # コンテンツ一致
 
         if score > 0:
             scored_entries.append((entry, score))
@@ -552,7 +528,122 @@ def get_knowledge_by_keywords(keywords: list[str], max_results: int = 5) -> list
 | title 内出現 | +5 | 主題に含まれる中程度 signal |
 | content 内出現 | +2 | 偶然出てきただけかもしれない弱い signal |
 
-「シザース」というノートを書いた選手に対して、**フェイント・テクニックの entry が確実に 1 位に来る** ように重みを決めます。content match は逆に 0 にすると今度はノートと entry の語彙完全一致しか拾えなくなり recall が落ちる。**+2 だが落とすほどでもない、というレベル感が経験的に最適** でした。
+content match は逆に 0 にすると今度はノートと entry の語彙完全一致しか拾えなくなり recall が落ちる。**+2 だが落とすほどでもない、というレベル感が経験的に最適** でした。
+
+## 後段 reranker — LLM コール 0 でも精度は伸ばせる
+
+「LLM rerank はコスト 2 倍」を理由に reranking 自体を諦める必要はありません。**title hit / section affinity / position / age / diversity decay** の 5 信号で並べ替える non-LLM reranker が microsec 級で動きます。
+
+[`App/backend/app/features/knowledge/domain/reranker.py:48-130`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/domain/reranker.py#L48-L130) (抜粋):
+
+```python
+@runtime_checkable
+class Reranker(Protocol):
+    """Protocol for any reranker (lexical, cross-encoder, LLM-based, ...)."""
+
+    def rerank(
+        self,
+        candidates: Iterable[tuple[KnowledgeChunk, float]],
+        context: RerankContext,
+        top_k: int,
+    ) -> list[KnowledgeChunk]: ...
+
+
+class IdentityReranker:
+    """No-op reranker — keeps the order produced by the retriever."""
+
+    def rerank(self, candidates, context, top_k):
+        ordered = sorted(candidates, key=lambda x: x[1], reverse=True)
+        return [chunk for chunk, _ in ordered[:top_k]]
+
+
+@dataclass
+class LexicalReranker:
+    title_weight: float = 3.0
+    keyword_weight: float = 4.0
+    section_weight: float = 2.0
+    position_weight: float = 5.0
+    age_weight: float = 3.0
+    diversity_decay: float = 0.85
+
+    def rerank(self, candidates, context, top_k):
+        scored = []
+        for chunk, base_score in candidates:
+            extra = 0.0
+            for kw in context.keywords:
+                if kw.lower() in chunk.title.lower():
+                    extra += self.title_weight
+                if kw.lower() in {k.lower() for k in chunk.keywords}:
+                    extra += self.keyword_weight
+                if self._section_match(context, chunk, kw):
+                    extra += self.section_weight
+            if context.position and self._position_match(chunk, context.position):
+                extra += self.position_weight
+            if context.age_category and self._age_match(chunk, context.age_category):
+                extra += self.age_weight
+            scored.append((chunk, base_score + extra))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        # diversity decay: 同 (category, subcategory) の連続を 0.85^n で減衰
+        seen, diversified = {}, []
+        for chunk, score in scored:
+            key = (chunk.category, chunk.subcategory)
+            penalty = self.diversity_decay ** seen.get(key, 0)
+            diversified.append((chunk, score * penalty))
+            seen[key] = seen.get(key, 0) + 1
+        diversified.sort(key=lambda x: x[1], reverse=True)
+        return [chunk for chunk, _ in diversified[:top_k]]
+```
+
+ポイント 4 つ:
+
+1. **`Reranker` は Protocol** — 将来 cross-encoder / LLM rerank に差し替えたい時、シグネチャを変えずに implementation だけ swap できる
+2. **`IdentityReranker`** で reranker を切れる — A/B test や regression test 時に有用
+3. **`RerankContext`** が position / age / keyword section を運ぶ — retriever の責任を 1st pass のスコアに集中させ、reranker は context-aware なボーナスだけに集中
+4. **`diversity_decay`** で同じ subcategory の連続を抑える — 上位 3 件が「ポジショニング ×3」になる事故を防ぐ
+
+retriever 側は **候補を多めに (`max_results × 3`) 取って reranker に渡す** だけ:
+
+```python
+def _search_markdown_knowledge(self, keywords, max_results=3, position=None, age_category=None):
+    if not self._md_chunks or not keywords:
+        return []
+    # 1st pass: keyword overlap
+    scored = []
+    for chunk in self._md_chunks:
+        score = ...  # +1 if substring, +2 if exact keyword
+        if score > 0:
+            scored.append((chunk, float(score)))
+    if not scored:
+        return []
+    scored.sort(key=lambda x: x[1], reverse=True)
+    candidates = scored[: max(max_results * 3, max_results)]
+
+    if self._reranker is None:
+        return [c for c, _ in candidates[:max_results]]
+
+    section_map = {kw: self._keyword_set.section_of(kw) for kw in keywords}
+    context = RerankContext(
+        keywords=tuple(keywords),
+        keyword_section=section_map,
+        position=position,
+        age_category=age_category,
+    )
+    return self._reranker.rerank(candidates, context, top_k=max_results)
+```
+
+「**1st pass で recall 確保 → 2nd pass で precision 改善**」という 2 段階構成が、LLM コールなしで成立します。
+
+### LLM rerank が必要になるとしたら
+
+| 信号 | LexicalReranker | LLM Reranker |
+|---|---|---|
+| 設計者が明示した tag (keywords / category) | ◎ ほぼ無料 | △ 過剰 |
+| 業界用語の同義語 ("カットイン" ≒ "中切り") | × | ◎ |
+| 文脈で初めて意味が決まる ("足が重い" の意図) | × | ◎ |
+| コスト | 0 円 / microsec | $0.001-0.01 per query / 数百 ms |
+
+**Lexical で取れる範囲は Lexical で取り切ってから LLM rerank の判断をする** が経済合理。Soccer Note の現状は前者だけで足りています。
 
 ## Markdown chunk — 構造化辞書では拾えない自然文の補強
 
@@ -562,30 +653,31 @@ def get_knowledge_by_keywords(keywords: list[str], max_results: int = 5) -> list
 
 ```text
 backend/app/features/knowledge/infrastructure/knowledge_base/
-├── tactics/
+├── tactics/        ← Markdown chunk (RAG 対象)
 │   ├── pressing.md
 │   ├── five_lane_theory.md
 │   ├── off_the_ball.md
 │   ├── build_up.md
 │   ├── arrow_theory.md
 │   └── positional_play.md
-├── positions/
-│   ├── forward.md
-│   ├── goalkeeper.md
-│   ├── side_back.md
-│   ├── winger.md
-│   ├── center_back.md
-│   └── midfielder.md
-└── development/
-    ├── golden_age.md
-    ├── u10_u12.md
-    ├── u15_u18.md
-    └── u6_u8.md
+├── positions/      ← Markdown chunk (RAG 対象)
+│   └── ...
+├── development/    ← Markdown chunk (RAG 対象)
+│   └── ...
+├── dict/           ← TypedDict 互換 (DictKnowledgeLoader, RAG 対象外)
+│   ├── README.md
+│   └── technical/
+│       └── sample_cut_in.md
+└── keywords/       ← keyword set (KeywordSet, RAG 対象外)
+    ├── README.md
+    └── ja.yaml
 ```
 
-合計 16 ファイル。これを **`KnowledgeChunk` というデータクラスに切り分け** て in-memory に持ちます。
+`dict/` と `keywords/` は **`KnowledgeLoader.SKIP_DIRS`** で chunk 化対象外。役割を分離してあるので、片方を変えても他方に影響しません。
 
-`build-football/App/backend/app/features/knowledge/domain/entity.py:7-44`:
+### `KnowledgeChunk` の構造
+
+[`build-football/App/backend/app/features/knowledge/domain/entity.py:7-44`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/domain/entity.py#L7-L44):
 
 ```python
 @dataclass
@@ -605,86 +697,101 @@ class KnowledgeChunk:
 
 **`embedding` フィールドは予約だけして使っていない** のがこの設計の肝。「あとで Embedding を足したくなったらフィールドを使う、いまは入れない」という拡張前提の構造です。
 
-### チャンク化 — `## heading` で分割、長すぎたら `### heading` で再分割
+### チャンク化 — 3 段階の優先度ある分割戦略
 
-`build-football/App/backend/app/features/knowledge/infrastructure/loader.py:98-131`:
+初版は「`## heading` で割って 2000 文字超えたら `### heading` で再分割」という 2 段階の愚直ルールでした。`### block` 自体が 2000 文字超だと **そこで止まり巨大 chunk を吐く** のが問題で、改めました。
+
+新戦略 (優先度順):
+
+1. **明示的境界マーカー** — `<!-- chunk -->` という HTML コメントで著者が境界を打てる
+2. **frontmatter directive** — `chunk_strategy: by-h2 | by-h3 | by-marker` でファイルごとに切替
+3. **デフォルトの auto** — `## heading` で分割 → 2000 文字超は **段落 → 文 → 文字** のリカーシブ分割で fallback
+
+[`App/backend/app/features/knowledge/infrastructure/loader.py:152-208`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/infrastructure/loader.py#L152-L208):
 
 ```python
-def _split_into_sections(self, content: str) -> list[str]:
-    """Split markdown content into logical sections.
+def _split_into_sections(content: str, strategy: str = "auto") -> list[str]:
+    if strategy == "by-marker":
+        return _split_by_marker(content)
+    if CHUNK_MARKER.search(content) and strategy == "auto":
+        return _split_by_marker(content)
+    if strategy == "by-h2":
+        return _split_by_heading(content, level=2, recursive=False)
+    if strategy == "by-h3":
+        return _split_by_heading(content, level=3, recursive=False)
+    return _split_by_heading(content, level=2, recursive=True)
 
-    Strategy:
-    1. Split by ## headings (main sections)
-    2. Keep each section as a chunk
-    3. If section is too long, split further
+
+def _recursive_split(text: str, target: int = CHUNK_TARGET_CHARS) -> list[str]:
+    """LangChain の RecursiveCharacterTextSplitter 相当.
+
+    順に試す:
+      1. ### heading 分割
+      2. 段落 (空行) 分割
+      3. 文 (。．.!?！？) 分割
+      4. 文字 window 分割 (50 char overlap)
     """
-    sections = []
-
-    # Split by ## headings
-    parts = re.split(r"(?=^##\s)", content, flags=re.MULTILINE)
-
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-
-        # If section is very long (>2000 chars), split by ### headings
-        if len(part) > 2000:
-            subsections = re.split(r"(?=^###\s)", part, flags=re.MULTILINE)
-            for sub in subsections:
-                if sub.strip():
-                    sections.append(sub.strip())
-        else:
-            sections.append(part)
-
-    return sections
+    if len(text) <= target:
+        return [text]
+    h3_parts = re.split(r"(?=^###\s)", text, flags=re.MULTILINE)
+    if len(h3_parts) > 1:
+        out = []
+        for part in h3_parts:
+            part = part.strip()
+            if not part: continue
+            if len(part) > target:
+                out.extend(_split_paragraphs(part, target))
+            else:
+                out.append(part)
+        return out
+    return _split_paragraphs(text, target)
 ```
 
-「2000 文字超えたら `###` で再分割」という愚直なルール。**embedding ありきだとここで「最適チャンクサイズは何 token か」議論で時間が溶ける** のですが、キーワードスコアなら適当でも壊れません。score は match 単位の積み上げなので chunk 長に影響されにくい。
+著者が先に境界を打ちたい時の使い方:
 
-### Markdown 検索ロジック
+```markdown
+---
+chunk_strategy: by-marker
+---
 
-`retriever.py:160-196` (Markdown chunk 専用のスコアリング):
+# 戦術: ビルドアップ
+
+## 概要
+従来の H2 ベースの自動分割では分けたくない長文。
+
+<!-- chunk -->
+
+## CB 同士の役割分担
+これだけを 1 chunk にしたい...
+
+<!-- chunk -->
+
+## GK 参加型ビルドアップ
+これも独立して 1 chunk...
+```
+
+**embedding ありきだとここで「最適チャンクサイズは何 token か」議論で時間が溶ける** のですが、キーワードスコアなら適当でも壊れません。score は match 単位の積み上げなので chunk 長に影響されにくい。
+
+### 検証テスト
+
+`### block` 自体が 2000 字超になるケースは、初版で **chunk 1 個に巨大コンテンツが入る** バグでした。新版ではテストで担保しています:
 
 ```python
-def _search_markdown_knowledge(
-    self,
-    keywords: list[str],
-    max_results: int = 3,
-) -> list[KnowledgeChunk]:
-    """Markdownナレッジからキーワード検索."""
-    if not self._md_chunks or not keywords:
-        return []
-
-    scored_chunks = []
-    keywords_lower = [kw.lower() for kw in keywords]
-
-    for chunk in self._md_chunks:
-        score = 0
-        chunk_text = (chunk.content + " " + " ".join(chunk.keywords)).lower()
-
-        # キーワードマッチング
-        for kw in keywords_lower:
-            if kw in chunk_text:
-                score += 1
-            if kw in [k.lower() for k in chunk.keywords]:
-                score += 2  # キーワード完全一致はボーナス
-
-        if score > 0:
-            scored_chunks.append((chunk, score))
-
-    # スコア順にソート
-    scored_chunks.sort(key=lambda x: x[1], reverse=True)
-    return [chunk for chunk, _ in scored_chunks[:max_results]]
+def test_recursive_split_falls_back_below_h3():
+    body = "段落です。" * 1000  # ~5000 chars in one paragraph
+    big = f"## Outer\n\n### Inner\n{body}\n"
+    sections = _split_into_sections(big, strategy="auto")
+    assert len(sections) > 1
+    assert all(len(s) <= 2400 for s in sections)
 ```
 
-辞書側 (10/5/2) と Markdown 側 (1+2 = 3 or 1) で **重みを変えている** のが工夫点。Markdown 側は構造的 metadata が薄いので素朴に「全文 +1 / keywords +2」だけ。**ノイズ抑制は辞書側の高重みに任せ、Markdown 側は recall 担当** という役割分担です。
+17 件の test (loader chunking 5 / dict loader 4 / keywords loader 4 / reranker 4) で構造的に担保。
 
 ## prompt 構築 — 4 セクション動的生成
 
 ここまでの 8 ナレッジソースを **build_context() が 4 セクションにまとめる** のがフィニッシュです。
 
-`build-football/App/backend/app/features/ai/infrastructure/knowledge/retriever.py:285-393` (抜粋):
+[`build-football/App/backend/app/features/ai/infrastructure/knowledge/retriever.py:376-475`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/ai/infrastructure/knowledge/retriever.py#L376-L475) (抜粋):
 
 ```python
 def build_context(
@@ -696,9 +803,7 @@ def build_context(
     include_position_guide: bool = True,
     include_age_guide: bool = True,
 ) -> str:
-    """AIプロンプト用のコンテキストを構築."""
     context_parts = []
-
     combined_text = " ".join([
         str(note_content.get("theme", "")),
         str(note_content.get("achievements", "")),
@@ -713,16 +818,20 @@ def build_context(
         context_parts.append("## 関連するサッカー知識")
         for entry in knowledge_entries:
             context_parts.append(f"\n### {entry['title']}")
-            content_lines = entry['content'].strip().split('\n')
-            context_parts.append('\n'.join(content_lines[:15]))
+            context_parts.append('\n'.join(entry['content'].strip().split('\n')[:15]))
             if entry.get('coaching_points'):
                 context_parts.append("\n**コーチングポイント:**")
                 for point in entry['coaching_points'][:3]:
                     context_parts.append(f"- {point}")
 
-    # 1.5. 戦術・専門知識 (Markdownナレッジから)
+    # 1.5. 戦術・専門知識 (Markdown chunk + reranker)
     if keywords:
-        md_chunks = self._search_markdown_knowledge(keywords, max_results=2)
+        md_chunks = self._search_markdown_knowledge(
+            keywords,
+            max_results=2,
+            position=player_position,
+            age_category=age_category,
+        )
         if md_chunks:
             context_parts.append("\n## 戦術・専門知識")
             for chunk in md_chunks:
@@ -730,95 +839,19 @@ def build_context(
                 content = chunk.content[:500] + "..." if len(chunk.content) > 500 else chunk.content
                 context_parts.append(content)
 
-    # 2. 練習メニュー
-    if include_drills:
-        drills = self.retrieve_drills(note_content, max_results=2)
-        if drills:
-            context_parts.append("\n## おすすめ練習メニュー")
-            for drill in drills:
-                context_parts.append(f"\n### {drill['name']}")
-                context_parts.append(f"{drill['description']}")
-                # ...
-
-    # 3. ポジション別ガイド
-    if include_position_guide and player_position:
-        position_guide = get_position_advice(player_position)
-        if position_guide:
-            context_parts.append(f"\n## {position_guide['position_name']}のポイント")
-            # ...
-
-    # 4. 年齢別ガイド
-    if include_age_guide and age_category:
-        age_guide = get_age_appropriate_advice(age_category)
-        if age_guide:
-            context_parts.append(f"\n## {age_guide['age_category']}年代の指導ポイント")
-            # ...
-
+    # 2-4. 練習メニュー / ポジション別 / 年齢別ガイド
+    # ...
     return '\n'.join(context_parts)
 ```
 
-つまり **入力 (note + position + age) ごとに、出力テキストの構造が変わる** という意味で、これは prompt template 注入というより **動的プロンプト生成** に近い。
-
-### prompts.py 側での組み付け
-
-`build-football/App/backend/app/features/ai/infrastructure/prompts.py:174-227` (build/rehab/condition の 3 種類を扱うが、build の場合の抜粋):
-
-```python
-def build_note_comment_prompt(
-    note_content: dict[str, Any],
-    note_type: str,
-    rag_context: str | None = None,
-    player_position: str | None = None,
-    age_category: str | None = None,
-) -> str:
-    if note_type == "build":
-        prompt = f"""以下のサッカー練習ノートに対して、励ましと具体的なアドバイスを提供してください。
-
-## 選手のノート
-- テーマ: {note_content.get('theme', '記載なし')}
-- できたこと: {note_content.get('achievements', '記載なし')}
-- 課題・改善点: {note_content.get('improvements', '記載なし')}
-- 次回意識すること: {note_content.get('nextFocus', '記載なし')}
-- 自己評価: {note_content.get('selfRating', '?')}/5"""
-
-        # 選手情報を追加 (あれば)
-        if player_position or age_category:
-            prompt += "\n\n## 選手情報"
-            if player_position:
-                prompt += f"\n- ポジション: {player_position}"
-            if age_category:
-                prompt += f"\n- 年齢カテゴリ: {age_category}"
-
-        # RAGコンテキストを追加 (あれば)
-        if rag_context:
-            prompt += f"\n\n{rag_context}"
-
-        # 出力形式
-        prompt += """
-
-## 出力形式 (JSON)
-{
-  "positive": "良かった点への具体的なフィードバック (2-3文、選手の頑張りを認める)。",
-  "improvement": "改善点へのアドバイス (2-3文)。具体的な練習方法やコツを含める。",
-  "nextAction": "次の練習で意識すべき具体的なポイント (1-2文)。",
-  "summary": "今日の練習を一言で表す要約 (20文字以内)",
-  "tags": ["パス, ドリブル, 1対1, ビルドアップ, トラップ ... 1〜5個"]
-}"""
-        return prompt
-```
-
-`{rag_context}` の中身が **note × position × age で組み立てた動的セクション**。これに上の SYSTEM プロンプト (JFA ライセンス保持者レベルのコーチ役) が被さって、最終的に GPT-4o に投げられます。
+**入力 (note + position + age) ごとに、出力テキストの構造が変わる**。これは prompt template 注入というより **動的プロンプト生成** に近い。
 
 ### Before / After — 一律 prompt → 動的 prompt
 
 #### Before (没案)
 
-最初の設計はこうでした:
-
 ```python
-# 没案: 全選手に同じ prompt
 SYSTEM_PROMPT = "あなたはサッカーコーチです。ノートに対してコメントしてください。"
-
 def build_prompt(note: dict) -> str:
     return f"## ノート\n{note['achievements']}\n## コメントしてください"
 ```
@@ -828,7 +861,6 @@ def build_prompt(note: dict) -> str:
 #### After (現行)
 
 ```python
-# 現行: ノート × position × age で 4 セクション動的注入
 rag_context = retriever.build_context(
     note_content=note.content,
     player_position=player.position,  # "WG"
@@ -843,7 +875,7 @@ prompt = build_note_comment_prompt(
 )
 ```
 
-U12 のウィングが「右サイドからカットインしてシュート決まった」と書くと、prompt にはこう注入されます:
+U12 のウィングが「右サイドからカットインしてシュート決まった」と書くと、prompt にはこう注入されます (動作実測):
 
 ```text
 ## 関連するサッカー知識
@@ -853,27 +885,27 @@ U12 のウィングが「右サイドからカットインしてシュート決�
 - 形だけでなく、タイミングと緩急を教える
 - 相手を見ることの重要性
 
-## おすすめ練習メニュー
-### サイドの1対1
-サイドからの1対1でカットインやクロスからのシュートを練習。
+## 戦術・専門知識
+### ウイング(WG)・サイドハーフ(SH)
+## ウイングの主な役割
+### 1. 得点
+- ゴールを狙うことが最優先
+### 4. カットイン
+- 中に切れ込んでシュート
+- 利き足と逆サイドに配置されることが多い
 
 ## ウィングのポイント
 **重要なスキル:**
 - ドリブル技術 (フェイント)
 - 正確なクロス
-- カットインからのシュート
 **避けたいミス:**
 - 毎回同じ仕掛け方
 - 守備に戻らない
 
 ## U12年代の指導ポイント
 **発達段階:** ゴールデンエイジ後期
-**この年代の特徴:**
-- 戦術理解が深まる
-- 状況判断ができるようになる
 **指導アプローチ:**
 - 「なぜ」を考えさせる指導
-- 選手に判断させる
 - ポジション固定はまだ避ける
 ```
 
@@ -910,33 +942,84 @@ embedding を使わずに、ここまで踏み込んだ context を作れるの�
 
 **keywords は 6-7 個に絞る、その軸の専門性を最も鋭く表すものだけ残す** が正解。「シュートの基本」entry は `["シュート", "枠内", "インステップ", "ボレー", "ゴール", "決定力"]` で十分。
 
-## 残課題
+### 失敗 5: `### block` 自体が 2000 文字超えるケースを想定していなかった
 
-正直なところ、今の設計には穴があります。
+初版の chunker は「`##` で割る → 2000 字超なら `###` で再分割」の 2 段階。`###` block 自体が 2000 字超だと **そこで分割が止まり巨大 chunk が吐かれる** バグがありました。新版では 3 段階目に **段落 → 文 → 文字** のリカーシブ分割を入れて回避。test で常時担保しています。
 
-### 残課題 1: チャンク粒度の最適化
+## v2 アップデート — 4 残課題のうち 4 つを解消
 
-`## heading` で割って 2000 文字超えたら `### heading` で再分割、という愚直ルールは「読みやすさ」と「検索ヒット率」の両方で最適ではありません。**Recursive Character Text Splitter** を導入するか、或いは Markdown frontmatter で chunk 境界を明示するか、検討中。ただし「pgvector に戻す前に試すべき選択肢が多い」というスタンスは変わりません。
+初版で挙げた 4 残課題 (チャンク粒度 / 再ランキング / ナレッジ更新フロー / 多言語化) に対して、**構造を入れ替えて全部潰した** のが今回の差分です。
 
-### 残課題 2: 再ランキング (re-ranking) なし
+### v2-1: チャンク粒度を 3 段階戦略 + リカーシブ fallback に
 
-top-k 抽出後に LLM で再 ranking すれば精度は上がりますが、**コスト 2 倍 + レイテンシ 2 倍** に対する RoR が見えていません。Team プラン ¥1,980/月の経済性を考えると、当面は単純スコアで十分。ノート品質モニタリングで「最終出力に対する不満」が一定閾値を超えたら導入予定。
+変更:
+- `<!-- chunk -->` 明示マーカー対応
+- frontmatter `chunk_strategy: by-h2 | by-h3 | by-marker` 対応
+- 2000 字超 fallback を **段落 → 文 → 文字** のリカーシブ分割に置換 (LangChain `RecursiveCharacterTextSplitter` 相当)
 
-### 残課題 3: ナレッジ更新フロー
+実 file: [`loader.py:140-260`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/infrastructure/loader.py#L140-L260) / test 5 件
 
-辞書 entry を増やすには Python ファイルを編集して PR を出す必要があります。**コーチが Markdown 1 枚を書き足すだけでナレッジが増える** フロー (`knowledge_base/` 配下に push するだけ) は実装済みですが、TypedDict 辞書側は引き続き手書き。「コーチング知識の継続的拡張」は仕組みとして未完。
+### v2-2: 後段 reranker を非 LLM で導入
 
-### 残課題 4: 多言語化
+変更:
+- `Reranker` Protocol + `IdentityReranker` + `LexicalReranker`
+- title / keyword / section affinity / position / age / diversity decay の 6 信号
+- LLM コール 0、microsec 級
 
-現状日本語のみ。`SOCCER_KEYWORDS` を英語化するのは可能だが、**ポジション名の alias map が言語ごとに膨れる** 問題がある。多言語化を検討する段階で初めて embedding 採用を再評価する予定。
+実 file: [`reranker.py:48-200`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/domain/reranker.py#L48-L200) / test 4 件
+
+将来 cross-encoder / LLM rerank を入れたくなったら、**同 Protocol で実装を差し替えるだけ**。retriever 側コードに変更不要。
+
+### v2-3: ナレッジ更新フローを Markdown + YAML frontmatter に
+
+変更:
+- `dict/<category>/*.md` に YAML frontmatter で TypedDict 互換 entry を書ける
+- `DictKnowledgeLoader.merge()` で id 一致なら built-in を上書き
+- コーチが Markdown 1 枚を push するだけで知識追加
+
+実 file: [`dict_loader.py:65-160`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/infrastructure/dict_loader.py#L65-L160) / test 4 件
+
+サンプル: `knowledge_base/dict/technical/sample_cut_in.md` で「カットインの基本」を YAML から追加。
+
+### v2-4: キーワードを言語別 YAML に外出し
+
+変更:
+- `keywords/<lang>.yaml` で言語ごとに分離
+- セクションタグ (`technical` / `tactical` / ...) を reranker の section affinity 信号に流用
+- `KnowledgeRetriever(lang="en")` で言語切替
+
+実 file: [`keywords_loader.py:40-90`](https://github.com/SakakitaniJunya/build-football/blob/main/App/backend/app/features/knowledge/infrastructure/keywords_loader.py#L40-L90) / test 4 件
+
+新言語追加は `en.yaml` を置くだけ — Python 編集不要。
+
+### test counts (実測)
+
+| カテゴリ | test 数 | PASS | 内容 |
+|---|---:|---:|---|
+| chunker | 5 | 5/5 | marker / frontmatter / recursive fallback / skip_dirs |
+| dict loader | 4 | 4/4 | frontmatter parse / required field / no-fm skip / merge override |
+| keywords loader | 4 | 4/4 | real ja / section lookup / missing lang / custom path |
+| reranker | 4 | 4/4 | identity / title boost / position affinity / diversity decay |
+| **合計** | **17** | **17/17** | — |
+
+backwards-compat:
+- `SOCCER_KEYWORDS` 定数は default 集合として残置 (既存 import 互換)
+- `KnowledgeRetriever()` 引数なし呼出しで `lang="ja"` / `LexicalReranker` 既定
+- `build_context()` / `get_compact_context()` のシグネチャ維持
+
+## 残課題 (v2 後)
+
+### 残課題: LLM rerank への昇格基準が未定義
+
+非 LLM の lexical reranker で運用していて「同義語の取り違え」が体感で分かるレベルになった時、LLM rerank に切り替える明確な metric が決まっていません。**ノート品質モニタリング (出力 JSON の `summary` / `improvement` のユーザ評価) が一定閾値を下回ったら導入** という運用約束だけ置いてあります。Reranker Protocol で実装は差し替え可能なので、コード側の準備は完了。
 
 ## 理論根拠 — なぜベクトル化前にここで勝てるか
 
-「ドメイン辞書 + Markdown chunk」が「pgvector + cosine」を超えうる根拠を 3 点で示します。
+「ドメイン辞書 + Markdown chunk + 非 LLM reranker」が「pgvector + cosine」を超えうる根拠を 3 点で示します。
 
 ### 根拠 1: ドメインが閉じているなら recall は辞書の方が高い
 
-「サッカーの育成年代知識」は **数百語規模で語彙が閉じる** 領域です。JFA 指導教本 + UEFA Coaching License + 蹴球学を掛け合わせても、専門用語は精々 500-1000 語。これは **`SOCCER_KEYWORDS` set に手で入る規模** です。
+「サッカーの育成年代知識」は **数百語規模で語彙が閉じる** 領域です。JFA 指導教本 + UEFA Coaching License + 蹴球学を掛け合わせても、専門用語は精々 500-1000 語。これは **`keywords/ja.yaml` (実測 117 語)** に手で入る規模です。
 
 OpenAI の Embedding はこの語彙を全て知っているわけではない (学習データに薄い専門用語ほど semantic 近傍が壊れる)。**閉じたドメインに対しては手書き辞書の recall の方が高い**。
 
@@ -944,33 +1027,37 @@ OpenAI の Embedding はこの語彙を全て知っているわけではない (
 
 ### 根拠 2: 再現可能性 — 検索結果が deterministic
 
-キーワードスコアは **入力が同じなら出力が同じ**。これは Eval / regression test を書く時に決定的に効きます。
+キーワードスコア + 非 LLM reranker は **入力が同じなら出力が同じ**。これは Eval / regression test を書く時に決定的に効きます。
 
 ```python
-# test_retriever.py の例
-def test_cutin_keyword_returns_feint_entry():
-    retriever = KnowledgeRetriever()
-    note = {"achievements": "右サイドからカットインしてシュート決まった"}
-    entries = retriever.retrieve_knowledge(note, max_results=1)
-    assert entries[0]["id"] == "tech_dribble_feints"
+def test_lexical_title_match_boosts_chunk():
+    cut_in = _chunk(id_="cut_in", title="カットインの基本", keywords=("カットイン",))
+    other = _chunk(id_="other", title="ファーストタッチ")
+    out = LexicalReranker().rerank(
+        [(cut_in, 1.0), (other, 1.0)],
+        RerankContext(keywords=("カットイン",)),
+        top_k=2,
+    )
+    assert out[0].id == "cut_in"
 ```
 
-これが embedding ベースだとモデルバージョン更新で stable な assertion が崩壊します (`text-embedding-3-small` の v2 が出ると上位順位が変わる)。**辞書ベースはモデル変更に対する免疫がある**。
+これが embedding ベースだとモデルバージョン更新で stable な assertion が崩壊します (`text-embedding-3-small` の v2 が出ると上位順位が変わる)。**辞書ベース + 非 LLM reranker はモデル変更に対する免疫がある**。
 
 ### 根拠 3: コスト — 月 ¥0 で動く
 
-このコードを動かすのに必要な外部サービス課金は **¥0**。in-memory 辞書 + Python の正規表現だけ。Cloud Run の常駐課金 (リクエストの数十 ms を増やすだけ) しか発生しません。
+このコードを動かすのに必要な外部サービス課金は **¥0**。in-memory 辞書 + Python の正規表現 + YAML パースだけ。Cloud Run の常駐課金 (リクエストの数十 ms を増やすだけ) しか発生しません。
 
-pgvector + Embedding API なら最低でも:
+pgvector + Embedding API + LLM reranker なら最低でも:
 - Embedding 課金 (`text-embedding-3-small`: $0.02 / 1M token)
 - pgvector を載せる Postgres (Cloud SQL minimum tier ¥3,000-5,000/月)
 - 再 embedding のための定期 batch (= 開発工数)
+- LLM rerank コール (Claude Haiku: $0.25 / 1M token × 上位 k 件分)
 
-Team ¥1,980/月の SaaS で **これに月 ¥3,000 払うか?** という単純な経済計算で答えは出ます。
+Team ¥1,980/月の SaaS で **これに月 ¥3,000-5,000 払うか?** という単純な経済計算で答えは出ます。
 
 ## 採用判断のフローチャート
 
-「ベクトル DB を入れるか」で迷ったらこうです:
+「ベクトル DB を入れるか / LLM rerank を足すか」で迷ったらこうです:
 
 ```mermaid
 flowchart TB
@@ -981,19 +1068,22 @@ flowchart TB
     Q2 -->|Yes| DICT[ドメイン辞書で<br/>まず実装]
     Q2 -->|No| EMB
 
-    DICT --> M{recall モニタ<br/>不足が出た?}
+    DICT --> RR[非 LLM reranker<br/>後段に追加]
+    RR --> M{recall モニタ<br/>不足が出た?}
     M -->|No 十分| DONE[完成 月 0 円]
-    M -->|Yes 自然文の揺らぎが効く| HYBRID[Hybrid<br/>辞書 + Embedding]
+    M -->|同義語誤認| LLMR[LLM rerank<br/>追加]
+    M -->|Yes 自然文の揺らぎ| HYBRID[Hybrid<br/>辞書 + Embedding]
 
-    HYBRID --> DONE2[完成 月 数千円]
+    LLMR --> DONE3[月 数千円]
+    HYBRID --> DONE2[月 数千円〜]
 
     classDef good fill:#e8f5e9,stroke:#2e7d32
     classDef cost fill:#ffebee,stroke:#c62828
     class DONE good
-    class EMB,HYBRID,DONE2 cost
+    class EMB,HYBRID,DONE2,LLMR,DONE3 cost
 ```
 
-「**いきなり Embedding にしない**」「**辞書で recall 不足が顕在化してから初めて hybrid 化する**」が運用 1 年で固まった原則です。
+「**いきなり Embedding にしない**」「**辞書 + 非 LLM reranker で recall 不足が顕在化してから初めて hybrid 化 / LLM rerank する**」が運用 1 年で固まった原則です。
 
 ## 用語整理
 
@@ -1002,19 +1092,21 @@ flowchart TB
 | 本記事の用語 | 業界標準語 | 説明 |
 |---|---|---|
 | ドメイン辞書 | - | 閉じた専門用語と紐付くナレッジ entry の手書きコレクション |
-| Markdown chunk | text chunking | Markdown を `##` heading で section 分割した検索単位 |
+| Markdown chunk | text chunking | Markdown を `##` heading + recursive splitter で section 分割した検索単位 |
 | キーワードスコア | sparse retrieval | embedding を使わない、語の一致回数ベースのスコア |
+| 非 LLM reranker | lexical reranker | LLM コールを伴わずに title/section/position 等の信号で並べ替える 2nd pass |
 | top-k 抽出 | retrieval | スコア上位 k 件を返す |
 | 動的プロンプト | dynamic prompt | 入力ごとに prompt 構造を組み替える方式 |
 | RAG | retrieval-augmented generation | 検索で取得した context を生成 prompt に注入する手法 |
 
 ## まとめ
 
-- pgvector / Pinecone / Qdrant を入れる前に、**ドメイン辞書 + Markdown chunk + キーワードスコア** で勝てる範囲があります。Soccer Note では **ナレッジ 18 + 練習 18 + ポジション 7 + 年齢 6 + Markdown 16** という規模を月 ¥0 のキーワード検索で運用しています
-- スコアリングは「**keywords 完全一致 +10 / title +5 / content +2**」の 3 段階加重和で十分。embedding なしで意味的順位を保てる
+- pgvector / Pinecone / Qdrant を入れる前に、**ドメイン辞書 + Markdown chunk + キーワードスコア + 非 LLM reranker** で勝てる範囲があります。Soccer Note では **ナレッジ 19 + 練習 18 + ポジション 7 + 年齢 6 + Markdown chunk 163** という規模を月 ¥0 で運用しています
+- スコアリングは「**keywords 完全一致 +10 / title +5 / content +2**」の 3 段階加重和。後段 reranker は title hit / section affinity / position / age / diversity decay の 6 信号で並べ替え。LLM コール 0
 - prompt は **note × position × age の 3 軸** で動的に構築する。一律 prompt は捨てる
 - ベクトル DB が必要になるのは「ドメイン辞書では拾いきれない自然言語の揺らぎが顕在化した時」だけ。**まず辞書で殴る、足りなくなったら embedding を足す** が正しい順序
-- Embedding 課金 + pgvector 常駐 + 再 embedding batch のコストを Team ¥1,980/月の SaaS が背負うのは経済的に成立しません。「閉じたドメイン × 小規模 SaaS」では辞書ベースが圧勝
+- ナレッジ拡張は Markdown + YAML frontmatter (`dict/<cat>/*.md`)、多言語化は `keywords/<lang>.yaml`。Python 編集ゼロ
+- Embedding 課金 + pgvector 常駐 + 再 embedding batch のコストを Team ¥1,980/月の SaaS が背負うのは経済的に成立しません。「閉じたドメイン × 小規模 SaaS」では辞書ベース + 非 LLM reranker が圧勝
 
 実コードは `build-football/App/backend/app/features/ai/infrastructure/knowledge/` 配下と `build-football/App/backend/app/features/knowledge/infrastructure/` 配下にあります。MIT ライセンスではないので直接コピー利用はできませんが、設計思想は本記事の file:line 引用で全部公開しています。
 
