@@ -350,22 +350,79 @@ Anthropic Engineering blog の "Building Effective Agents" (2024-12) で挙げ�
 
 個人開発の最大の罠は「PR merge → done と思い込む」こと。`deploy-verification` skill が `merge した` `deploy したか` `本番に出てる?` のシグナルで自動発火し、Cloud Run / Vercel の revision を実測するまで「完了」を許さない。これは Hook ではなく Skill にしているのは、Claude が判断したい (「これは docs だけ PR だから verify 不要」みたいな例外) 余地を残すため。詳細は **F-04**。
 
-## これから書く 52 章 (axis 別)
+## これまで書いた 28 章 (連載 Day 1-26/52)
 
-| Axis | 章数 | 代表 |
-|---|---:|---|
-| A. Claude Code 拡張・運用 | 10 | A-01 5 機構 ✅ / A-02 Skill Architecture / A-03 Hooks |
-| B. Multi-Agent 設計 | 7 | **B-01 Creator≠Evaluator ✅** / B-03 7 エージェント協調 |
-| C. LLM-as-Judge / Eval | 4 | C-01 13 Evaluator / C-04 Decision Genealogy |
-| D. Multi-LLM / AI Router | 7 | **D-01 4 象限 Router ✅** / D-05 Prompt Caching |
-| E. RAG / 知識注入 | 4 | **E-01 pgvector なし RAG ✅** / E-03 Context Engine 5 層 |
-| F. AI 駆動 CI/CD / DevOps | 4 | F-01 Issue → Cloud Run / F-04 マージ済 ≠ 本番反映済 |
-| G. Vision / マルチモーダル | 3 | **G-01 Vision OCR ✅** / G-03 Zod 型検証 |
-| H. AI Ops 独自路線 | 5 | **H-01 Event Bus ✅** / H-04 MECE Audit Skill |
-| I. プロンプト工学・堅牢化 | 4 | I-01 3 層堅牢化 / I-04 circuit breaker |
-| J. 統合・経済圏 | 4 | J-01 LINE × Vision × Stripe |
+連載は 52 本構成、現時点で **28 本 (53.8%) が公開可能状態**。残り 24 本は順次追加。
 
-✅ がすでに公開済 (本連載 Day 2-9/52)。
+### A. Claude Code 拡張・運用 (5/10)
+
+- **A-01** [Slash と Skill と Hook を混ぜて爆発した話](./claude-code-as-company-5-mechanisms) (Day 2)
+- **A-02** [Skill Architecture 入門](./skill-architecture-introduction) (Day 3)
+- **A-03** [Hooks で品質ゲート](./hooks-quality-gates) (Day 4)
+- **A-04** [13 部署 director を宣言的に管理](./13-department-directors-declarative) (Day 16)
+- **A-06** [Worktree 並列の落とし穴](./worktree-parallel-agents-pitfalls) (Day 19)
+
+### B. Multi-Agent 設計 (4/7)
+
+- **B-01** [Creator ≠ Evaluator 3 ラウンド設計](./creator-evaluator-pattern) (Day 5)
+- **B-03** [7 エージェント協調 CI/CD](./seven-agent-cicd-pipeline) (Day 10)
+- **B-04** [Project × Department Matrix](./project-department-matrix) (Day 20)
+- **B-05** [Silent Router 自然文 dispatch](./silent-router-natural-dispatch) (Day 25)
+
+### C. LLM-as-Judge / Eval (2/4)
+
+- **C-01** [LLM-as-Judge 13 Evaluator](./llm-as-judge-13-evaluators) (Day 21)
+- **C-04** [Decision Genealogy moat 設計](./decision-genealogy-moat) (-)
+
+### D. Multi-LLM / AI Router (4/7)
+
+- **D-01** [Multi-LLM Router を 4 象限で振り分け](./multi-llm-router-4-quadrants) (Day 6)
+- **D-02** [Fallback Chain (OpenAI→Anthropic→Google)](./multi-llm-fallback-chain) (Day 17)
+- **D-04** [LLM コスト最適化 — Haiku/Flash/Mini](./llm-cost-optimization-haiku-flash-mini) (Day 18)
+- **D-05** [Anthropic Prompt Caching で 90% 安く](./anthropic-prompt-caching) (Day 11)
+
+### E. RAG / 知識注入 (2/4)
+
+- **E-01** [pgvector なしの RAG](./rag-without-pgvector) (Day 9)
+- **E-03** [Context Engine 5 層](./context-engine-5-layers) (Day 22)
+
+### F. AI 駆動 CI/CD / DevOps (2/4)
+
+- **F-01** [Issue → Cloud Run Reusable Workflow](./issue-to-cloud-run-workflow) (Day 11)
+- **F-04** [マージ済 ≠ 本番反映済](./merged-not-equals-deployed) (Day 12)
+
+### G. Vision / マルチモーダル (2/3)
+
+- **G-01** [Claude Vision でレシート OCR](./claude-vision-receipt-ocr) (Day 7)
+- **G-02** [LINE 画像 → Vision → Prisma → CSV E2E](./line-vision-prisma-csv-e2e) (Day 15)
+
+### H. AI Ops 独自路線 (3/5)
+
+- **H-01** [Cross-Department Event Bus](./cross-department-event-bus) (Day 8)
+- **H-02** [director を state.md + cron で自走](./director-state-cron-autonomy) (Day 23)
+- **H-04** [MECE Audit Skill + Stop Hook](./mece-audit-skill-stop-hook) (Day 14)
+
+### I. プロンプト工学・堅牢化 (2/4)
+
+- **I-01** [3 層堅牢化 (Rate/Validation/Fallback)](./three-layer-llm-robustness) (Day 13)
+- **I-02** [Gemini 503 リトライ + UI フォールバック](./gemini-503-retry-ui-fallback) (Day 26)
+
+### J. 統合・経済圏 (1/4)
+
+- **J-01** [LINE × Vision × Stripe 中小零細 SaaS](./line-vision-stripe-japan-saas) (Day 24)
+
+### これから書く 24 章
+
+- **A. 残 5**: A-05 Memory / A-07 Status Line / A-08 MCP 自作 / A-09 Mode 使い分け / A-10 settings 個人 vs project
+- **B. 残 3**: B-02 収束ガード / B-06 Handoff Playbook / B-07 4 層分離
+- **C. 残 2**: C-02 Promptfoo なし回帰 / C-03 品質スコア → decisions.jsonl
+- **D. 残 3**: D-03 JSON モード差異 / D-06 Extended Thinking / D-07 Tool Use Schema
+- **E. 残 2**: E-02 サッカー戦術 RAG / E-04 RAG 前のプロンプト構造化
+- **F. 残 2**: F-02 Issue Label 駆動 dispatch / F-03 Discord + GH Actions 無人運営
+- **G. 残 1**: G-03 Vision API を Zod で型検証
+- **H. 残 2**: H-03 自立駆動型会社マスター設計 / H-05 SSOT Mandate
+- **I. 残 2**: I-03 Schema-shot / I-04 circuit breaker 3 パターン
+- **J. 残 3**: J-02 next-auth + Firestore + Gemini Concierge / J-03 Stripe Live ¥50 E2E / J-04 4 種混合インフラ
 
 ## 次の記事へ + 連載をフォロー
 
