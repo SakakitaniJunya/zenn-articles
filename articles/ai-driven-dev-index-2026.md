@@ -1,5 +1,5 @@
 ---
-title: "Claude Code で「会社」を回す 6 層構成 — 52 本連載 INDEX"
+title: "個人で AI 駆動開発を 1 年回したら 8 SaaS が動いた話 — 52 本連載 INDEX"
 emoji: "🗺️"
 type: "tech"
 topics: ["claudecode", "anthropic", "ai", "llm", "agentsdk"]
@@ -12,21 +12,45 @@ review_status: "draft"
 
 > **Disclaimer**: 本連載は著者が**個人 (副業)** で運営する小規模プロジェクト群 (CreaNest 名義) の技術記録です。所属組織・本業の業務内容とは一切関係ありません。記載の数値・構成は執筆時点 (2026-05) の自宅検証環境のスナップショットであり、商用品質や SLA を保証するものではありません。
 
-## 結論
+> この記事は **52 本連載 (ai-driven-dev) の Day 1/52** です。明日から毎朝 1 本、各 Layer をコード付きで掘り下げます。
 
-- 個人で AI 駆動開発を 1 年回した結果、Claude Code を「会社」として運用する **6 層スタック**(拡張機構 / Multi-Agent / Multi-LLM / RAG / Eval / 常駐 daemon)に収束しました。
-- 監視 8 プロダクト / 13 部署 director / 7 launchctl daemon が回り、人間 (CEO 役) の介入は朝 5 分の Zenn approve のみという運用に落ちています。
-- 本記事はその全体マップ。**今日から毎朝 1 本、52 日連続で各層を掘ります (Day 1/52)**。コード・図・file:line は全部 OSS repo から引いています。
+## 1 年やったらこうなった (1 行で)
+
+**個人で AI 駆動開発を 1 年回した結果、いま 8 SaaS / 13 部署 director / 7 launchctl daemon が動き、私 (CEO 役) の介入は朝 5 分の Zenn approve のみになった。**
+
+実測値で言うと、devops-hub の App は TS/TSX 170 ファイル、`~/.claude/skills/` + repo の skill が 11 個、`.claude/commands/` の slash command が 20 個、launchctl plist 7 本。Komyu は Cloud Run の revision 64 (2026-05-05 時点)、nailsalon は MRR ¥20,000 で唯一の確定収益、Soccer Note は Team ¥1,980/月 でリリース準備中。
+
+```bash
+# 全部実測 (再現コマンド)
+$ find /Users/sakaki/project/devops-hub/App -type f \( -name "*.ts" -o -name "*.tsx" \) \
+    -not -path "*/node_modules/*" | wc -l
+170
+$ ls /Users/sakaki/project/devops-hub/.claude/commands/*.md | wc -l
+20
+$ { ls ~/.claude/skills/; ls /Users/sakaki/project/devops-hub/.claude/skills/; } | sort -u | wc -l
+11
+$ ls /Users/sakaki/project/devops-hub/pipeline-kit/ops/*.plist | wc -l
+7
+```
+
+本記事は、ここに辿り着くまでに固まった **6 層スタック** の全体マップです。各層はそれぞれ別記事 (連載 52 本) に切り出し、コード・図・file:line で具体的に掘り下げます。
+
+## 問題 — 「コードを書く道具」では足りなかった
+
+最初は Cursor / Copilot で補完してもらえれば十分だと思っていました。実際 1 ヶ月くらいは生産性が上がります。
+
+ただ、**プロダクトを 3 つ・4 つと並列で持つ** ようになると別の問題が出ます。
+
+- 仕様書を書く時間がない (PR に「これ何の機能?」と聞かれる)
+- レビューが追いつかない (1 人だから自分でレビュー)
+- 運用でハマる (deploy 後の verification、incident 対応、顧客対応)
+- 営業・マーケ・法務・経理が止まる (個人開発だから当然)
+
+ここで「補完」ではなく「**自律的に手を動かしてくれる相方**」が必要だと気付きました。Claude Code (Agent SDK 内蔵の CLI) を「会社」として運用する、という発想に切り替えたのが 2025 年夏。それから 1 年経って、いまの 6 層スタックに収束しました。
 
 > 用語: **Decision Genealogy** = 意思決定 1 件ごとに ID を発番し、commit / ADR / 承認に貫通させて「なぜそう決めたか」を後から辿れるようにする仕組み。詳細は C-04 で書きます。
 
-## なぜこの記事を書くか
-
-「AI 駆動開発」と言っても、Cursor で補完させる話と、Agent SDK で自律的にコードを書かせる話と、自社運用を全部 AI に置き換える話は別物です。語彙も道具も違うので、**「どこまで何をやれているか」のスナップショット** がないと議論が噛み合いません。
-
-この INDEX は、私が現時点で何を作って何を作っていないかを正直に並べる場として書きます。**ASCII 図でなく Mermaid、抽象論でなく実 file:line、抽象的な強さでなく実測の数字** を冒頭で並べる方針です。連載の他記事もこの粒度で書いていきます。
-
-## 全体像 — 6 Layer スタック
+## 解法 — 6 Layer スタック
 
 ```mermaid
 flowchart TB
@@ -52,9 +76,9 @@ flowchart TB
     L0 -.-> L5
 ```
 
-**見方**: 上の Layer ほど抽象、下ほど常駐。Layer 0 の機構を Layer 1 のパターンで束ね、Layer 2 の LLM に Layer 3 の Context を載せて、Layer 4 で品質を測り、Layer 5 が無人で回し続ける、という構造です。
+上の Layer ほど抽象、下ほど常駐稼働。Layer 0 の機構を Layer 1 のパターンで束ね、Layer 2 の LLM に Layer 3 の Context を載せて、Layer 4 で品質を測り、Layer 5 が無人で回し続ける、という構造です。
 
-## 1 日のフロー (実稼働中)
+### 1 日のフロー (実稼働中)
 
 ```mermaid
 sequenceDiagram
@@ -75,22 +99,19 @@ sequenceDiagram
     CEO->>GH: git push main
     GH->>Z: 自動公開 (GitHub 連携)
 
-    Note over L: 12:00 JST
+    Note over L: 12:00 / 18:00 / 21:00 JST
     L->>X: tweet auto-post (gate 通過分)
-    Note over L: 18:00 JST
+    Note over L: × 3 回
     L->>X: tweet auto-post
-    Note over L: 21:00 JST
     L->>X: tweet auto-post
     X-->>FS: posted.jsonl に append
 
     Note over CEO,X: CEO 介入は朝 5 分のみ、日中は無人
 ```
 
-CEO の介入は **朝 5 分の Zenn approve のみ**。日常 tweet は CEO 承認なしで auto-post (`numbers` category だけ approve 必須)。
+### Layer 0 — Claude Code の 5 拡張機構
 
-## Layer 0 — Claude Code の 5 拡張機構
-
-A-01 で深掘りしますが要点だけ。Claude Code には拡張ポイントが 5 つあり、それぞれ起動条件が違います。
+Claude Code には拡張ポイントが 5 つあります (詳細は **A-01**):
 
 | 機構 | 起動条件 | 私の実例 |
 |---|---|---|
@@ -100,7 +121,7 @@ A-01 で深掘りしますが要点だけ。Claude Code には拡張ポイント
 | Skill | 会話シグナル → 自動 fire | `tweet-capture` / `deploy-verification` / `event-emit` |
 | MCP | 外部 SaaS 常時露出 | `figma` 公式 server |
 
-**Hook の実例** (`devops-hub/.claude/settings.json:30-50`):
+実 hook (`devops-hub/.claude/settings.json:30-50`):
 
 ```json
 {
@@ -126,9 +147,9 @@ A-01 で深掘りしますが要点だけ。Claude Code には拡張ポイント
 }
 ```
 
-PostToolUse は **append-only な軽い記録だけ**、重い検証は **Stop hook** に寄せる、というのが運用 1 年で固まった原則です。
+**PostToolUse は append-only な軽い記録だけ**、重い検証は Stop hook に寄せる、というのが運用 1 年で固まった原則。最初に `pnpm typecheck` を仕込んで 1 ファイル編集のたびに数十秒止まる地獄を踏んだので。
 
-## Layer 1 — Multi-Agent (13 部署 director + 7 agent 協調)
+### Layer 1 — Multi-Agent (13 部署 + 7 agent 協調)
 
 devops-hub には部署別 director が 13 並んでいます。
 
@@ -138,11 +159,13 @@ ceo  cs  data  design  finance  hr  legal  marketing  pmo  pr  product  sales  s
 # 13 directories
 ```
 
-各 director は `state.md` を持ち、12 時間ごと (06:00 / 18:00 JST) に同期 daemon が回ります。CEO Agent は自然文 input を受け取り、無音 dispatch (どの部署か聞き返さない silent router) で該当 director に渡す設計です。
+各 director は `state.md` を持ち、12 時間ごと (06:00 / 18:00 JST) に同期 daemon が回ります。CEO Agent は自然文 input を受け取り、無音 dispatch (どの部署か聞き返さない silent router) で該当 director に渡す設計です。詳細は **B-04** で。
 
-7 agent 協調パイプライン (PMA → DocsA → DevA → RevA → EvalA → TestA → CIA) は別軸で、GitHub Issue → 仕様書 → 実装 → レビュー → PR の流れを自動化します。詳細は B-03 で。
+7 agent 協調パイプライン (PMA → DocsA → DevA → RevA → EvalA → TestA → CIA) は別軸で、GitHub Issue → 仕様書 → 実装 → レビュー → PR の流れを自動化します。詳細は **B-03** で。
 
-## Layer 2 — Multi-LLM Router (タスク特性で振り分け)
+特に重要なのが **Creator ≠ Evaluator パターン**: 生成した側に評価させない、最大ラウンド制限 (3 ラウンド超えで人間 escalation)、Sub-Agent 4 層 (Creator / Validator / RateLimiter / Fallback) の分離。これを守らないと「永遠に修正案を出し続ける AI」が完成します。詳細は **B-01**。
+
+### Layer 2 — Multi-LLM Router (4 象限)
 
 build-football (Soccer Note) では Anthropic / OpenAI / Google を **同一サービス内で併用** しています。
 
@@ -183,24 +206,11 @@ class AIFeature(str, Enum):
     TEAM_ANALYSIS = "team_analysis"
 ```
 
-Provider mapping (`router.py:40-52`):
+詳細は **D-01**、Fallback Chain は **D-02**、Prompt Caching は **D-05**。
 
-```python
-class AIRouter:
-    FEATURE_PROVIDER_MAP: dict[AIFeature, tuple[str, str | None]] = {
-        AIFeature.NOTE_COMMENT:        ("openai",    None),
-        AIFeature.WEEKLY_SUMMARY:      ("anthropic", None),
-        AIFeature.INPUT_ASSIST:        ("google",    "flash"),
-        AIFeature.TEAM_ANALYSIS:       ("google",    "pro"),
-        # ... 残り 6 entry は同じ pattern
-    }
-```
+### Layer 0 + Layer 2 の組合せ — Vision で経理 SaaS
 
-判断軸は **「高品質な日本語」「深い推論」「軽量・高速」「大規模 context」の 4 象限**。この上に Fallback Chain (OpenAI → Anthropic → Google) と Anthropic Prompt Caching を被せて、コストと可用性を両立させます。詳細は D-01 / D-05 で。
-
-## Layer 0 + Layer 2 の組合せ — Claude Vision で経理 SaaS
-
-keirai (経理 SaaS) では LINE で送られたレシート画像を Claude Vision で構造化抽出。実コード (`keirai/src/lib/ocr.ts:1-50`):
+keirai (経理 SaaS) では LINE で送られたレシート画像を Claude Haiku 4.5 で構造化抽出。実コード (`keirai/src/lib/ocr.ts:1-50`):
 
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
@@ -234,11 +244,9 @@ export async function readReceipt(imageBuffer: Buffer, mimeType: string): Promis
 }
 ```
 
-ポイント: モデルは **Haiku 4.5** (高速・低コスト)、`max_tokens: 1024` で十分、`type: "image"` + base64 で画像を直接埋め込み。Vision API の応答を Zod で型検証する話は G-03 で。
+8 フィールドを 1 プロンプトで構造化、`max_tokens: 1024` で十分、Haiku 4.5 で平均 1.5 秒応答。詳細は **G-01**。
 
-## Layer 4 — Skill (会話シグナルで自動 fire)
-
-Skill は Hook と違って Claude 本人が判定する点が重要です。発火条件は description に **シグナル語を列挙** して書ききります。
+### Layer 4 — Skill (会話シグナルで自動 fire)
 
 ```markdown
 <!-- ~/.claude/skills/event-emit/SKILL.md:1-10 (実物) -->
@@ -248,19 +256,17 @@ description: |
   Use this skill whenever the CEO mentions a business event...
   Trigger on Japanese phrases:
   "成約した", "入金あった", "契約締結", "launch した", "公開した",
-  "申請した", "決まった", "サインした", "shipped", "released",
-  "提出した", "署名した", "approve した", "却下した",
-  or English equivalents.
+  "申請した", "決まった", "サインした", "shipped", "released", ...
   Calls `pipeline-kit/ops/emit-event.sh` to append a record to
   `.claude/events/business-events.jsonl` per ADR-0006.
 ---
 ```
 
-「曖昧な状況説明」ではなく「具体的なシグナル語の列挙」で書くと、適切な頻度で発火します。詳細は A-02 (Skill Architecture 入門) で。
+「曖昧な状況説明」ではなく「具体的なシグナル語の列挙」で書くと、適切な頻度で発火します。詳細は **A-02**。
 
-## Layer 5 — 常駐 daemon (launchctl 7 本)
+### Layer 5 — 常駐 daemon (launchctl 7 本)
 
-devops-hub の `pipeline-kit/ops/` 配下に launchd plist が **7 本配備** されています (CEO load 後に稼働)。
+devops-hub の `pipeline-kit/ops/` 配下に launchd plist が **7 本** 配備されています。
 
 | plist (`com.devops-hub.<name>`) | 役割 | 頻度 |
 |---|---|---|
@@ -272,9 +278,7 @@ devops-hub の `pipeline-kit/ops/` 配下に launchd plist が **7 本配備** �
 | `outcomes` | 意思決定 outcome 集計 | 1 日 1 回 |
 | `sync-director-states` | 13 director state.md 同期 | 06:00 / 18:00 JST |
 
-> フルパスは `pipeline-kit/ops/com.devops-hub.<name>.plist`
-
-**実 invocation パターン** (`pipeline-kit/ops/run-orchestrator.sh:475-485`):
+実 invocation パターン (`pipeline-kit/ops/run-orchestrator.sh:475-485`):
 
 ```bash
 claude \
@@ -295,7 +299,7 @@ wait "${CLAUDE_PID}"
 2. **`< "${PROMPT_FILE}"`** — `--add-dir` が variadic で末尾の位置引数を吸収するので arg 渡し NG、stdin が正解
 3. **30 分 watchdog** — 暴走を時間で止める。security boundary は cwd 制限 + log 監査で確保
 
-## 監視中のプロダクト (8 件、SSOT は `App/src/lib/mock-data/projects.ts`)
+## 監視中の 8 プロダクト
 
 | id | 役割 | AI 実装の主軸 | stage |
 |---|---|---|---|
@@ -308,93 +312,82 @@ wait "${CLAUDE_PID}"
 | colason-markdown-editor | OSS Reader | C++ + TypeScript | ideation |
 | zenn-articles | この連載 | claude -p で daily draft 生成 | mvp (本記事公開時点) |
 
-> `devops-hub` は監視対象ではなく**監視基盤本体**なので別枠。
-> `yomi-note` は projects.ts SSOT 未登録 (近日追加予定)、本記事では監視対象に含めません。
+> `devops-hub` は監視対象ではなく**監視基盤本体**なので別枠。`yomi-note` は近日 SSOT (`projects.ts`) に追加予定。
 
-devops-hub 自身の規模 (実測):
+## 残課題 — まだできていないこと
 
-```bash
-$ find /Users/sakaki/project/devops-hub/App -type f \( -name "*.ts" -o -name "*.tsx" \) \
-    -not -path "*/node_modules/*" | wc -l
-170
-$ ls /Users/sakaki/project/devops-hub/.claude/commands/*.md | wc -l
-20
-$ { ls ~/.claude/skills/; ls /Users/sakaki/project/devops-hub/.claude/skills/; } | sort -u | wc -l
-11
-$ ls /Users/sakaki/project/devops-hub/pipeline-kit/ops/*.plist | wc -l
-7
-```
+正直に言うと、6 層が綺麗に揃ってるわけではなく、**穴は山ほどあります**。
 
-App TS/TSX **170**、slash command **20**、skill **11** (個人 10 + repo 1 dedup)、launchctl plist **7**。
+1. **launchctl の本番常駐化が未完** — MacBook で動かしているのを iMac (always-on-host) に移す移行が Phase A 段階。詳細は `docs/runbooks/always-on-host-inventory.md`。
+2. **X 自動投稿が stub** — `auto-post.sh` の quality gate ロジックは設計したが Python 実装中、X API key も未設定。
+3. **Zenn 連載の自動化レール** — `claude -p "/zenn-next"` で記事 draft は生成できるが、permission 罠で 1 度ハングした (`--permission-mode bypassPermissions` で解消、それでも watcher bug あり)。
+4. **Decision Genealogy の蓄積が薄い** — `decisions.jsonl` を作ったがレコード数がまだ少ない。Phase 1.5 で本格運用予定。
+5. **テスト・E2E・観測性** — 本業 SaaS (nailsalon/Komyu/Soccer Note) の E2E カバレッジが偏っている。F-04 で書きます。
+6. **複数アカウント運用** — 本業 PC (Accenture managed) と個人 PC (CreaNest) の Claude Code 分離が手動運用。
 
-## 落とし穴 / 失敗談
+これらは順次連載 (52 本) で進捗を書きます。
 
-### 1. Hook に重い処理を入れて編集が止まった
+## 理論根拠 — なぜこの構成で 1 人会社が回るのか
 
-最初、PostToolUse の Write/Edit にフルの type-check を仕込んだら、1 ファイル編集するたびに数十秒止まる地獄になりました。
+最後に「なぜこの 6 層で動くのか」の根拠を 3 つ。
 
-**Before** (壊れた版):
+### 根拠 1: Anthropic の "Building Effective Agents" 原則と整合
 
-```json
-{
-  "matcher": "Write|Edit",
-  "hooks": [{ "type": "command", "command": "pnpm typecheck" }]
-}
-```
+Anthropic Engineering blog の "Building Effective Agents" (2024-12) で挙げられている原則は:
 
-**After** (`devops-hub/.claude/settings.json` 現行):
+- Augmented LLM (LLM + tool + memory + retrieval)
+- Workflow と Agent を分けて使う (Routing / Parallelization / Orchestrator-Worker)
+- Evaluator が必須 (Creator ≠ Evaluator)
+- Tool / 仕様の透明性
 
-```json
-{
-  "matcher": "Write|Edit",
-  "hooks": [{
-    "type": "command",
-    "command": "echo \"[$(date +%H:%M:%S)] modified: $f\" >> .claude/pipeline/agent.log"
-  }]
-}
-```
+**6 層スタックはこの原則を 1 人会社の運営に拡張したもの**。Layer 0 = Augmented LLM (Tool / Memory / Retrieval)、Layer 1 = Workflow + Evaluator、Layer 2-3 = LLM 多様化 + Retrieval、Layer 4 = Eval、Layer 5 = Orchestrator (cron 化)。
 
-PostToolUse は **append-only な軽い記録だけ**。重い検証は Stop hook (一連の作業が終わった時点) に集約。教訓: **Hook の所要時間 = 編集体験の遅延**。
+### 根拠 2: Creator ≠ Evaluator が moat
 
-### 2. claude -p を `--permission-mode acceptEdits` で headless 運用してハング
+外部 (Claude agent 4 並列討論、2026-04-30) で「commodity, weak moat」と判定された後、唯一残った差別化要素が **Decision Genealogy** (= 全意思決定に Decision-Id を貫通させて辿れるようにする moat 候補)。これは Creator ≠ Evaluator パターンの数値化拡張で、論理的に「個人で書ける」かつ「商用 SaaS でやってる人がいない」領域。詳細は **C-04**。
 
-zenn-articles の自動化スクリプトを最初 `acceptEdits` で書いたら、Bash tool が出た瞬間に permission prompt で永遠待機。launchctl から起動された claude が **30 分 watchdog ぎりぎりまで idle のまま無進捗**。
+### 根拠 3: 「マージ済 ≠ 本番反映済」を skill で強制
 
-修正は前述の `bypassPermissions + stdin` パターン (`pipeline-kit/ops/run-orchestrator.sh:475`)。同じ罠は B-02 (収束ガードと Escalation Threshold) でも触れます。
-
-### 3. 「個人で AI Ops を商品化できる」と思い込んだ
-
-監視 8 プロダクト / 11 skill / 7 daemon の構成は数値だけ見ると派手ですが、Claude agent を 4 並列で討論させたら全員から **「commodity, weak moat」** と判定されました (2026-04-30、内部 4 並列討論)。Claude Code に親和的な repo 構成と運用ノウハウは差別化要素ではあるが、外販する SaaS としては脆弱、という結論。
-
-学び: AI Ops 自体は商品化しない / OSS 化しない。**SI 受託 + 自社 Portfolio + AI Ops (multiplier)** の三脚で食う、と方針を確定しました。
+個人開発の最大の罠は「PR merge → done と思い込む」こと。`deploy-verification` skill が `merge した` `deploy したか` `本番に出てる?` のシグナルで自動発火し、Cloud Run / Vercel の revision を実測するまで「完了」を許さない。これは Hook ではなく Skill にしているのは、Claude が判断したい (「これは docs だけ PR だから verify 不要」みたいな例外) 余地を残すため。詳細は **F-04**。
 
 ## これから書く 52 章 (axis 別)
 
 | Axis | 章数 | 代表 |
 |---|---:|---|
-| A. Claude Code 拡張・運用 | 10 | A-01 5 機構 / A-02 Skill Architecture / A-03 Hooks |
-| B. Multi-Agent 設計 | 7 | B-01 Creator≠Evaluator / B-03 7 エージェント協調 |
+| A. Claude Code 拡張・運用 | 10 | A-01 5 機構 ✅ / A-02 Skill Architecture / A-03 Hooks |
+| B. Multi-Agent 設計 | 7 | **B-01 Creator≠Evaluator ✅** / B-03 7 エージェント協調 |
 | C. LLM-as-Judge / Eval | 4 | C-01 13 Evaluator / C-04 Decision Genealogy |
-| D. Multi-LLM / AI Router | 7 | D-01 4 象限 Router / D-05 Prompt Caching |
-| E. RAG / 知識注入 | 4 | E-01 pgvector なし RAG / E-03 Context Engine 5 層 |
+| D. Multi-LLM / AI Router | 7 | **D-01 4 象限 Router ✅** / D-05 Prompt Caching |
+| E. RAG / 知識注入 | 4 | **E-01 pgvector なし RAG ✅** / E-03 Context Engine 5 層 |
 | F. AI 駆動 CI/CD / DevOps | 4 | F-01 Issue → Cloud Run / F-04 マージ済 ≠ 本番反映済 |
-| G. Vision / マルチモーダル | 3 | G-01 Vision OCR / G-03 Zod 型検証 |
-| H. AI Ops 独自路線 | 5 | H-01 Event Bus / H-04 MECE Audit Skill |
+| G. Vision / マルチモーダル | 3 | **G-01 Vision OCR ✅** / G-03 Zod 型検証 |
+| H. AI Ops 独自路線 | 5 | **H-01 Event Bus ✅** / H-04 MECE Audit Skill |
 | I. プロンプト工学・堅牢化 | 4 | I-01 3 層堅牢化 / I-04 circuit breaker |
 | J. 統合・経済圏 | 4 | J-01 LINE × Vision × Stripe |
+
+✅ がすでに公開済 (本連載 Day 2-9/52)。
 
 ## 次の記事へ + 連載をフォロー
 
 これは **52 本連載 (ai-driven-dev) の Day 1/52** です。
 
-→ **A-01 [Claude Code を「会社」にする 5 機構](./claude-code-as-company-5-mechanisms)** — 本記事の Layer 0 をコード付きで掘り下げます
+→ **A-01 [Slash と Skill と Hook を混ぜて爆発した話 — Claude Code 5 機構](./claude-code-as-company-5-mechanisms)** (Day 2/52)
 
-→ 残り 51 本は毎朝 1 本ずつ、各 Layer をコード付きで掘り下げます
+→ **B-01 [Creator ≠ Evaluator — AI 出力を「収束」させる 3 ラウンド設計](./creator-evaluator-pattern)** (Day 5/52)
+
+→ **D-01 [Multi-LLM Router を「タスク特性 4 象限」で振り分ける](./multi-llm-router-4-quadrants)** (Day 6/52)
+
+→ **G-01 [Claude Vision でレシート OCR → 仕訳分類を 1 プロンプトで](./claude-vision-receipt-ocr)** (Day 7/52)
+
+→ **H-01 [13 部署が JSONL 1 本で連動する Cross-Department Event Bus](./cross-department-event-bus)** (Day 8/52)
+
+→ **E-01 [pgvector なしで RAG — ドメイン辞書 × Markdown チャンク](./rag-without-pgvector)** (Day 9/52)
 
 連載を見逃さない方法:
 
 - **Zenn でこの著者をフォロー** — 公開通知が届きます
 - **X で告知 tweet をフォロー** — 朝 6:00 に投稿予定 (準備中)
 - **repo を watch**: [SakakitaniJunya/zenn-articles](https://github.com/SakakitaniJunya/zenn-articles) — 全 draft が見えます
+- **GitHub Issue で誤りや「ここをもっと深く」のリクエスト歓迎** — 連載の質を一緒に上げてください
 
-書き進めながらこの INDEX もリンクを増やしていきます。誤りや「ここをもっと深く」のリクエストは GitHub Issue でお気軽に。
+書き進めながらこの INDEX もリンクを増やしていきます。

@@ -313,6 +313,52 @@ Subagent は **「親の会話を見ていない別人」** なので、必要�
 
 **教訓: Subagent への prompt は「この会話を見ていない同僚への依頼書」として書く**。
 
+## 残課題 — まだできていないこと
+
+正直に並べると、5 機構の使い分けは固まりつつあるが穴も多い。
+
+1. **Skill description の書き方を体系化できていない** — 私の場合は「シグナル語列挙」で安定したが、長文タスクの skill (例: incident response のような 10 step manual) では発火条件の書き方がまだ手探り。**A-02** で別途まとめる。
+2. **Hook の冪等性とエラー復旧** — `Stop hook` が途中で失敗した場合の rerun 戦略が無い。失敗しても次の Stop で running するけど、観測性が薄い。
+3. **Subagent の cost 観測** — 親が複数 Subagent を呼ぶと token 消費がブラックボックス化する。Subagent 単位で Anthropic Console の cost 内訳が出ないので、推定で運用している。
+4. **MCP server の自作判断軸が弱い** — 「公式 figma で十分」だが、Notion / Linear などを自作すべきかの基準が定量化されていない。
+5. **Hook と Skill のハイブリッド (Hook が Skill script を呼ぶ) が混乱を生む** — 本文で書いたとおり実装はしているが、読者には境界線が見えにくい。
+
+## 理論根拠 — なぜこの 5 機構分類で運用が回るのか
+
+最後に「なぜこの分類で 1 人会社が動くか」の根拠を 3 つ。
+
+### 根拠 1: Anthropic "Building Effective Agents" の 5 パターンと整合
+
+Anthropic Engineering blog "Building Effective Agents" (2024-12) で挙げられている 5 パターン (Augmented LLM / Prompt Chaining / Routing / Parallelization / Orchestrator-Workers) のうち、
+
+- **Routing** = Slash command (人間 / cron が起点で workflow を選ぶ)
+- **Parallelization** = Subagent (別 context で並列調査)
+- **Augmented LLM の "tool use" 周辺** = Hook (tool 呼び出しに割り込む)
+- **Orchestrator-Workers** = Skill (会話シグナルで自動 fire してサブタスク)
+- **MCP** = Tool 拡張 (外部 SaaS を tool として露出)
+
+Claude Code の 5 機構は **公式の Effective Agents パターンと 1:1 対応** している。これを意識して使い分けると、Anthropic の知見をそのまま個人開発に持ち込める。
+
+### 根拠 2: 「忘れても許せるか」が境界線として強い
+
+Hook と Skill の使い分けで「Claude が忘れても許せるか」を基準にしているのは、**人間の運用と同じメンタルモデル**だから。
+
+- 銀行の振込 (= 忘れたら致命的) → 物理的に強制 (= Hook)
+- 議事録の取り方 (= 忘れたら次回補える) → 会話シグナルで思い出させる (= Skill)
+
+このアナロジーで境界線を引くと、新しい運用ルールを追加するときの判断が **0.5 秒** で終わる。
+
+### 根拠 3: 5 機構の「起動条件」が単一軸 (= 何が起点か)
+
+5 機構を「起動条件 = 何が起点か」だけで分類すると:
+
+- Human / Cron → Slash
+- Claude セッション → Subagent / Skill
+- Tool 呼び出し → Hook
+- 外部 SaaS → MCP
+
+**起点による単一軸の分類** で漏れも重複もない (MECE)。これが他の説明 (例: 「これは自動化機能、これは拡張機能、これは...」) よりも判断ツリーが浅くなる理由。
+
 ## まとめ
 
 5 機構を 1 行で覚えるならこうです。
@@ -329,14 +375,33 @@ Subagent は **「親の会話を見ていない別人」** なので、必要�
 
 これは **52 本連載 (ai-driven-dev) の Day 2/52** です。
 
-→ **A-02 [Skill Architecture 入門 — 自動 fire する手続き的知識を Markdown + frontmatter で定義する](./)** (準備中) — Skill description の書き方をもう一段細かく掘ります
+すでに公開済の関連記事:
 
-→ **A-03 Hooks の組み方 (PostToolUse / Stop で品質ゲートを作る具体)** で Hook 側を深掘りします
+→ **B-01 [Creator ≠ Evaluator — AI 出力を「収束」させる 3 ラウンド設計](./creator-evaluator-pattern)** (Day 5/52) — 13 director × Creator/Evaluator 分離 + 30 分 watchdog の実装
 
-連載を見逃さない方法:
+→ **D-01 [Multi-LLM Router を「タスク特性 4 象限」で振り分ける](./multi-llm-router-4-quadrants)** (Day 6/52) — 10 機能 × 3 プロバイダの実 router.py
+
+→ **G-01 [Claude Vision でレシート OCR → 仕訳分類を 1 プロンプトで](./claude-vision-receipt-ocr)** (Day 7/52) — Haiku 4.5 + LINE Webhook 経理 SaaS
+
+→ **H-01 [13 部署が JSONL 1 本で連動する Cross-Department Event Bus](./cross-department-event-bus)** (Day 8/52) — emit-event.sh + handoff playbook
+
+→ **E-01 [pgvector なしで RAG — ドメイン辞書 × Markdown チャンク](./rag-without-pgvector)** (Day 9/52) — TECHNICAL/TACTICAL/PHYSICAL/MENTAL 4 軸辞書
+
+これから書く予定:
+
+→ **A-02** Skill Architecture 入門 — Skill description の書き方をもう一段細かく
+→ **A-03** Hooks の組み方 (PostToolUse / Stop で品質ゲートを作る具体)
+
+### 連載を見逃さない方法
 
 - **Zenn でこの著者をフォロー** — 公開通知が届きます
 - **X で告知 tweet をフォロー** (準備中) — 朝 6:00 に投稿
 - **repo を watch**: [SakakitaniJunya/zenn-articles](https://github.com/SakakitaniJunya/zenn-articles) — 全 draft が見えます
 
-書き進めながら INDEX 記事もリンクを増やしていきます。誤りや「ここをもっと深く」のリクエストは GitHub Issue でお気軽に。
+### Discussion / フィードバック歓迎
+
+- 「Hook と Skill の境界線、こう書いた方がいいのでは?」 → GitHub Issue で議論しましょう
+- 「私の運用ではこの 5 機構分類だとこういう穴がある」 → 反例も歓迎
+- 「自社で似た運用しているがここは違う」 → 比較記事も書けます
+
+連載 52 本を書き切る間に、5 機構の使い分けはアップデートし続けます。本記事も将来書き直します。誤りや「ここをもっと深く」のリクエストは GitHub Issue でお気軽に。
