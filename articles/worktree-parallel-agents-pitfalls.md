@@ -1,5 +1,5 @@
 ---
-title: "Worktree 並列エージェントの落とし穴と verify パターン"
+title: "Claude Code worktree 並列の verify 4 step"
 emoji: "🌳"
 type: "tech"
 topics: ["claudecode", "anthropic", "agentsdk", "git", "ai"]
@@ -8,14 +8,20 @@ queue_id: "A-06"
 series: "ai-driven-dev"
 draft_source: "ai+human"
 related_repos: ["devops-hub"]
-review_status: "draft"
+review_status: "reviewing"
 ---
 
 > **Disclaimer**: 本連載は著者が **個人 (副業)** で運営する小規模プロジェクト群 (CreaNest 名義) の技術記録です。所属組織・本業の業務内容とは一切関係ありません。記載の数値・構成は執筆時点 (2026-05) の自宅検証環境のスナップショットであり、商用品質や SLA を保証するものではありません。
 
+## TL;DR (3 行)
+
+- `isolation: "worktree"` は filesystem 隔離のみで git semantic 隔離は保証されず、**main tree に commit が混入する事故**が起きる
+- 解は dispatch 直後の **verify 4 step** (`git worktree list` / `git status` + `log` / `git -C <wt> rev-parse HEAD` / `gh pr view`) を skip 不可で通すこと
+- force-push 拒否時は **A 案 (`--force-with-lease`) を試さず B 案 (close + 新 PR) に即切替**、並列上限は実測 **8 が sweet spot**
+
 ## 結論
 
-Agent SDK で `isolation: "worktree"` を指定して並列 dispatch しても、**Agent は時々 main tree に commit します**。dispatch 後は `git worktree list` + branch HEAD verify が必須で、`force-push` が拒否された場合は close + 新 PR の B option に即切り替えます。これを 1 セッションで踏み抜いて学んだのが 2026-05-01 の overnight dispatch (60+ Issue 投入 / 31 open PR 達成 / 並列上限 8) でした。
+Claude Code の Agent SDK で `isolation: "worktree"` を指定して並列 dispatch しても、**Agent は時々 main tree に commit します**。dispatch 後は `git worktree list` + branch HEAD verify が必須で、`force-push` が拒否された場合は close + 新 PR の B option に即切り替えます。これを 1 セッションで踏み抜いて学んだのが 2026-05-01 の overnight dispatch (60+ Issue 投入 / 31 open PR 達成 / 並列上限 8) でした。
 
 - **`isolation: "worktree"` のバグ** で 60+ Issue を 8 並列 spawn → 翌朝 main tree に身に覚えのない commit 3 本が混入
 - **検証 4 step** (`git worktree list` / `git status` / `git -C <wt> log` / branch HEAD pin) を dispatch 直後に必ず通す
@@ -379,7 +385,7 @@ Agent 自身に「お前 main 汚染してないか?」と聞いて自浄させ�
 
 ### 3. 失敗の cost 非対称性
 
-`verify 4 step` のコストは 30 秒程度、skip して main 汚染を踏むコストは 10 時間 (実測)。**1200 倍の cost 非対称性**がある以上、確率がいくら低くても毎回検証する方が期待値で勝ちます。memory `feedback_verify_deploy_after_merge.md`「マージ済 ≠ 本番反映済 / revision 確認まで責任範囲」と同じ思想で、**完了報告を実体検証で裏取りする**を全運用で貫くのが CEO 1 人会社の生存戦略です。
+`verify 4 step` のコストは 30 秒程度、skip して main 汚染を踏むコストは 10 時間 (実測)。`10h = 36,000s`、`36,000 / 30 = 1,200` で **1200 倍の cost 非対称性**になります。確率がいくら低くても毎回検証する方が期待値で勝ちます。memory `feedback_verify_deploy_after_merge.md`「マージ済 ≠ 本番反映済 / revision 確認まで責任範囲」と同じ思想で、**完了報告を実体検証で裏取りする**を全運用で貫くのが CEO 1 人会社の生存戦略です。
 
 ---
 
@@ -398,4 +404,6 @@ Agent 自身に「お前 main 汚染してないか?」と聞いて自浄させ�
 - [A-04: PostToolUse hook で品質ゲートを倒す](./hooks-quality-gates)
 - [B-03: マージ済 ≠ 本番反映済 — verify deploy パターン](./merged-not-equals-deployed)
 
-GitHub Discussion で「並列 dispatch でこんな罠踏みました」「verify 4 step に追加すべき step」のシェア歓迎です。
+GitHub Discussion で「並列 dispatch でこんな罠踏みました」「verify 4 step に追加すべき step」のシェア歓迎です。記事への編集提案は Zenn 右上「GitHub で編集」から PR で受け付けています。
+
+X でシェアいただける際は `#ClaudeCode` `#AIエージェント` でメンションください。連載の他記事は [INDEX](./ai-driven-dev-index-2026) から辿れます (Day 19/52)。
