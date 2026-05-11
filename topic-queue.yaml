@@ -50,10 +50,10 @@ topics:
     priority: 3
     status: pending
   - id: A-06
-    title: "Worktree 並列エージェントを安全に運用する — isolation バグと verify パターン"
+    title: "Claude Code Agent SDKでworktreeを使って並列開発したい！"
     axis: claude-code
     priority: 2
-    status: pending
+    status: published
   - id: A-07
     title: "Claude Code の Status Line を KPI ダッシュボード化する"
     axis: claude-code
