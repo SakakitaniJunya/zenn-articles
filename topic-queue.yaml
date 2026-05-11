@@ -64,6 +64,11 @@ topics:
     axis: claude-code
     priority: 3
     status: pending
+  - id: A-08-intro
+    title: "MCPの仕組みと自作する方法：AIエージェントに\"道具\"を渡す入門"
+    axis: claude-code
+    priority: 2
+    status: published
   - id: A-09
     title: "Plan Mode / Auto Mode / Fast Mode を CEO ロールで使い分ける"
     axis: claude-code
