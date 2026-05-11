@@ -1,5 +1,5 @@
 ---
-title: "MCPの仕組みと自作する方法：AIエージェントに\"道具\"を渡す入門"
+title: "MCPの仕組みと軽く自作してみる"
 emoji: "🧩"
 type: "tech"
 topics: ["mcp", "typescript", "claudecode", "ai", "dotnet"]
@@ -13,13 +13,13 @@ review_status: "published"
 
 ## はじめに
 
-Claude Code、Cursor、GitHub Copilot などのAI開発ツールを使っていると、最近よく出てくるのが **MCP** です。
+Claude Code、Cursor、GitHub Copilotなどを触ってると、最近やたら出てくるのが **MCP** 。
 
-MCP は **Model Context Protocol** の略で、LLMアプリケーションと外部データソース・外部ツールをつなぐためのオープンプロトコルです。公式仕様では、MCPは「LLMアプリケーションと外部データソース・ツールをシームレスに統合するためのオープンプロトコル」と説明されています。([Model Context Protocol][1])
+MCPは **Model Context Protocol** の略で、LLMアプリと外部データソース・ツールをつなぐためのオープンプロトコル。公式仕様でも「LLMアプリケーションと外部データソース・ツールをシームレスに統合するためのオープンプロトコル」と書かれてる。([Model Context Protocol][1])
 
-一言でいうと、MCPは **AIエージェント用のUSB-C** のようなものです。
+一言でいうと、MCPは **AIエージェント用のUSB-C** みたいなもの。
 
-ただし、MCPは「普通のWeb APIの置き換え」ではありません。
+ただ、MCPは「普通のWeb APIの置き換え」じゃない。
 
 MCPは、AIクライアントに対して、
 
@@ -30,15 +30,15 @@ MCPは、AIクライアントに対して、
 このプロンプトテンプレートを使えます
 ```
 
-と標準的な形で伝えるための仕組みです。
+と標準的な形で伝えるための仕組み。
 
-この記事では、MCPの基本構造を整理したうえで、TypeScriptで最小のMCP Serverを自作します。
+ということで、MCPの基本構造をざっと整理して、TypeScriptで最小のMCP Serverを軽く自作してみる。
 
 ---
 
 ## この記事でわかること
 
-この記事では、以下を扱います。
+この記事で扱うのはこのあたり。
 
 | 項目 | 内容 |
 | --- | --- |
@@ -50,17 +50,17 @@ MCPは、AIクライアントに対して、
 | 実務設計 | 安全なTool設計、Read-only開始、認可、エラー設計 |
 | .NET実装 | C# SDKでの最小構成 |
 
-対象読者は、以下のような人です。
+対象読者はこんな感じ。
 
-- Claude CodeやCursorでMCPという言葉を見たが、まだ仕組みが腹落ちしていない人
+- Claude CodeやCursorでMCPという言葉を見たけど、まだ仕組みが腹落ちしてない人
 - 自社SaaSや社内ツールをAIエージェントから操作できるようにしたい人
-- TypeScriptまたはC#でMCP Serverを自作してみたい人
+- TypeScriptかC#でMCP Serverを軽く自作してみたい人
 
 ---
 
 ## MCPが解決する課題
 
-AIエージェントに外部操作をさせたい場合、よくある要望はこうです。
+AIエージェントに外部操作をさせたいとき、よくある要望はこんな感じ。
 
 | やりたいこと | MCPなし | MCPあり |
 | --- | --- | --- |
@@ -70,11 +70,11 @@ AIエージェントに外部操作をさせたい場合、よくある要望は
 | 社内ドキュメントを検索する | 独自RAG連携を作る | Document Search用MCP Serverを作る |
 | ローカルファイルを操作する | クライアント依存の実装になる | Filesystem系MCP Serverをつなぐ |
 
-MCPの嬉しさは、**AIクライアントとツールの間に共通の接続規格を作れること** です。
+MCPの嬉しさは、**AIクライアントとツールの間に共通の接続規格を作れること** 。
 
-従来は、Claude用、Cursor用、社内AI用にそれぞれ個別の連携を作る必要がありました。
+従来は、Claude用、Cursor用、社内AI用にそれぞれ個別の連携を作る必要があった。
 
-MCPを使うと、ツール側を **MCP Server** として実装し、AIアプリ側は **MCP Client** として接続します。
+MCPを使うと、ツール側を **MCP Server** として実装し、AIアプリ側は **MCP Client** として接続する。
 
 ```mermaid
 flowchart LR
@@ -88,9 +88,9 @@ flowchart LR
 
 ## MCPの基本構造
 
-MCPには、主に3つの登場人物があります。
+MCPには、主に3つの登場人物がいる。
 
-公式仕様でも、MCPは **Host / Client / Server** の構成で説明されています。HostはLLMアプリケーション、ClientはHost内の接続役、Serverは外部データや機能を提供する側です。また、通信にはJSON-RPC 2.0が使われます。([Model Context Protocol][1])
+公式仕様でも、MCPは **Host / Client / Server** の構成で説明されてる。HostはLLMアプリ、ClientはHost内の接続役、Serverは外部データや機能を提供する側。通信にはJSON-RPC 2.0が使われる。([Model Context Protocol][1])
 
 ```mermaid
 flowchart LR
@@ -117,13 +117,13 @@ flowchart LR
 
 ### Host
 
-Hostは、Claude Code、Claude Desktop、Cursorのような **AIアプリ本体** です。
+Hostは、Claude Code、Claude Desktop、Cursorのような **AIアプリ本体** 。
 
-ユーザーと会話し、LLMを動かし、必要に応じてMCP Client経由で外部ツールを呼び出します。
+ユーザーと会話し、LLMを動かし、必要に応じてMCP Client経由で外部ツールを呼び出す。
 
 ### Client
 
-Clientは、Hostの中にある **MCP Serverとの接続役** です。
+Clientは、Hostの中にある **MCP Serverとの接続役** 。
 
 ClientはMCP Serverに対して、
 
@@ -133,15 +133,15 @@ ClientはMCP Serverに対して、
 このToolを実行してください
 ```
 
-といったリクエストを送ります。
+といったリクエストを送る。
 
 ### Server
 
-Serverは、ツールやデータを提供する側です。
+Serverは、ツールやデータを提供する側。
 
-自作する場合、多くの開発者が実装するのはこの **MCP Server** です。
+自作する場合、多くの開発者が実装するのはこの **MCP Server** 。
 
-たとえば、以下のようなものをMCP Serverとして作れます。
+たとえばこんなものをMCP Serverとして作れる。
 
 | MCP Serverの例 | できること |
 | --- | --- |
@@ -155,9 +155,9 @@ Serverは、ツールやデータを提供する側です。
 
 ## MCP Serverが公開できる3つの要素
 
-MCP Serverは、主に以下の3つをClientに公開できます。
+MCP Serverは、主に以下の3つをClientに公開できる。
 
-公式仕様では、Serverが提供できる機能として **Resources / Prompts / Tools** が定義されています。Resourcesはコンテキストやデータ、Promptsはテンプレート化されたメッセージやワークフロー、ToolsはAIモデルが実行できる関数です。([Model Context Protocol][1])
+公式仕様では、Serverが提供できる機能として **Resources / Prompts / Tools** が定義されてる。Resourcesはコンテキストやデータ、Promptsはテンプレート化されたメッセージやワークフロー、ToolsはAIモデルが実行できる関数。([Model Context Protocol][1])
 
 | 種類 | 役割 | 例 |
 | --- | --- | --- |
@@ -167,52 +167,52 @@ MCP Serverは、主に以下の3つをClientに公開できます。
 
 ### Tools
 
-Toolsは、AIが実際に呼び出す関数です。
+Toolsは、AIが実際に呼び出す関数。
 
-たとえば、以下のようなイメージです。
+たとえばこんなイメージ。
 
 ```ts
 searchCustomer({ name: "田中" })
 ```
 
-外部APIを呼ぶ、DBを検索する、Issueを作る、計算する、といった処理をToolとして公開します。
+外部APIを呼ぶ、DBを検索する、Issueを作る、計算する、みたいな処理をToolとして公開する。
 
-重要なのは、**AIが引数を組み立てて呼ぶ** という点です。
+重要なのは、**AIが引数を組み立てて呼ぶ** という点。
 
-そのため、Toolの名前、説明、入力スキーマはかなり重要です。
+なので、Toolの名前、説明、入力スキーマはかなり重要。
 
 ### Resources
 
-Resourcesは、AIが読み取れるデータです。
+Resourcesは、AIが読み取れるデータ。
 
-たとえば、以下のようなURIで表現されます。
+たとえばこんなURIで表現される。
 
 ```txt
 file:///project/spec.md
 customer://123
 ```
 
-Resourcesは「操作する関数」というより、**参照できる文脈やデータ** に近いです。
+Resourcesは「操作する関数」というより、**参照できる文脈やデータ** に近い。
 
 ### Prompts
 
-Promptsは、よく使う指示テンプレートです。
+Promptsは、よく使う指示テンプレート。
 
-たとえば、以下のようなテンプレートをMCP Server側から提供できます。
+たとえばこんなテンプレートをMCP Server側から提供できる。
 
 ```txt
 このPRを、セキュリティ・保守性・テスト観点でレビューしてください
 ```
 
-チームで共通のレビュー観点や、定型ワークフローを配るときに便利です。
+チームで共通のレビュー観点や、定型ワークフローを配るときに便利。
 
 ---
 
 ## Tools / Resources / Prompts の使い分け
 
-最初はここが少し分かりにくいです。
+最初はここが少し分かりにくい。
 
-ざっくり分けると、以下のように考えると理解しやすいです。
+ざっくり分けると、こう考えると理解しやすい。
 
 | やりたいこと | 使うもの | 理由 |
 | --- | --- | --- |
@@ -236,9 +236,9 @@ flowchart TD
 
 ## MCPの通信方式
 
-MCPでは、メッセージ形式としてJSON-RPCを使います。
+MCPでは、メッセージ形式としてJSON-RPCを使う。
 
-Transportとしては、標準入出力を使う **stdio** と、ネットワーク越しに使う **Streamable HTTP** が標準として定義されています。公式仕様では、MCPはJSON-RPCメッセージを使い、標準Transportとして `stdio` と `Streamable HTTP` を定義しています。([Transports - Model Context Protocol][2])
+Transportとしては、標準入出力を使う **stdio** と、ネットワーク越しに使う **Streamable HTTP** が標準として定義されてる。公式仕様では、MCPはJSON-RPCメッセージを使い、標準Transportとして `stdio` と `Streamable HTTP` を定義してる。([Transports - Model Context Protocol][2])
 
 | Transport | 用途 | 例 |
 | --- | --- | --- |
@@ -247,9 +247,9 @@ Transportとしては、標準入出力を使う **stdio** と、ネットワー
 
 ### stdio
 
-stdioは、MCP Serverをローカルプロセスとして起動し、標準入力・標準出力で通信する方式です。
+stdioは、MCP Serverをローカルプロセスとして起動し、標準入力・標準出力で通信する方式。
 
-ローカル開発では、まずstdioから始めるのが簡単です。
+ローカル開発では、まずstdioから始めるのが簡単。
 
 ```mermaid
 sequenceDiagram
@@ -264,25 +264,25 @@ sequenceDiagram
 
 ### Streamable HTTP
 
-Streamable HTTPは、ネットワーク越しにMCP Serverへ接続する方式です。
+Streamable HTTPは、ネットワーク越しにMCP Serverへ接続する方式。
 
-TypeScript SDKのServer Guideでも、リモートサーバーにはStreamable HTTP、ローカルのプロセス起動型連携にはstdioを選ぶ、と説明されています。([TypeScript SDK Server Guide][3])
+TypeScript SDKのServer Guideでも、リモートサーバーにはStreamable HTTP、ローカルのプロセス起動型連携にはstdioを選ぶ、と説明されてる。([TypeScript SDK Server Guide][3])
 
-チーム利用、SaaS化、社内基盤化するならStreamable HTTPを検討します。
+チーム利用、SaaS化、社内基盤化するならStreamable HTTPを検討する。
 
 ---
 
-## MCP Serverを自作する
+## MCP Serverを軽く自作してみる
 
-ここからは、TypeScriptで最小のMCP Serverを作ります。
+ここからは、TypeScriptで最小のMCP Serverを作っていく。
 
-今回は以下のToolを持つMCP Serverを作ります。
+今回作るのはこのTool。
 
 ```txt
 add(a, b) -> a + b を返す
 ```
 
-なお、この記事では安定して使いやすい `@modelcontextprotocol/sdk` の構成で説明します。
+なお、この記事では安定して使いやすい `@modelcontextprotocol/sdk` の構成で説明する。
 
 ---
 
@@ -296,7 +296,7 @@ npm install @modelcontextprotocol/sdk@^1 zod
 npm install -D typescript tsx @types/node
 ```
 
-`package.json` を以下のようにします。
+`package.json` はこんな感じにする。
 
 ```json
 {
@@ -320,14 +320,14 @@ npm install -D typescript tsx @types/node
 
 ## 2. MCP Serverを実装する
 
-`src/server.ts` を作ります。
+`src/server.ts` を作る。
 
 ```bash
 mkdir src
 touch src/server.ts
 ```
 
-実装は以下です。
+実装はこんな感じ。
 
 ```ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -364,7 +364,7 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 ```
 
-これで、AIクライアントから呼び出せる `add` Tool ができました。
+これで、AIクライアントから呼び出せる `add` Tool ができた。
 
 ---
 
@@ -374,31 +374,31 @@ await server.connect(transport);
 npm run dev
 ```
 
-ここで注意です。
+ここで注意。
 
-stdioのMCP Serverは、通常のWebサーバーのようにブラウザで開くものではありません。
+stdioのMCP Serverは、普通のWebサーバーみたいにブラウザで開くものじゃない。
 
-AIクライアントがプロセスを起動し、標準入力・標準出力でJSON-RPCメッセージをやり取りします。
+AIクライアントがプロセスを起動して、標準入力・標準出力でJSON-RPCメッセージをやり取りする。
 
-そのため、`npm run dev` しても画面にWebページが表示されるわけではありません。
+なので、`npm run dev` しても画面にWebページが表示されるわけじゃない。
 
 ---
 
 ## 4. MCP Inspectorでテストする
 
-MCP Serverは、MCP Inspectorを使うとテストしやすいです。
+MCP Serverは、MCP Inspectorを使うとテストしやすい。
 
 ```bash
 npx -y @modelcontextprotocol/inspector
 ```
 
-Inspectorを起動したら、Transportに `stdio` を選び、以下のようなコマンドで接続します。
+Inspectorを起動したら、Transportに `stdio` を選んで、こんなコマンドで接続する。
 
 ```bash
 npx tsx /absolute/path/to/my-first-mcp-server/src/server.ts
 ```
 
-接続後、`add` Toolを選び、以下のような引数で実行します。
+接続後、`add` Toolを選んで、こんな引数で実行する。
 
 ```json
 {
@@ -407,7 +407,7 @@ npx tsx /absolute/path/to/my-first-mcp-server/src/server.ts
 }
 ```
 
-以下のような結果が返れば成功です。
+こんな結果が返れば成功。
 
 ```txt
 1 + 2 = 3
@@ -417,52 +417,52 @@ npx tsx /absolute/path/to/my-first-mcp-server/src/server.ts
 
 ## 5. Claude Codeに接続する
 
-Claude CodeにstdioのMCP Serverを追加する場合、以下のように登録できます。
+Claude CodeにstdioのMCP Serverを追加する場合、こう登録できる。
 
-Claude Code公式ドキュメントでも、ローカルstdioサーバーは `claude mcp add [options] <name> -- <command> [args...]` の形式で追加すると説明されています。([Claude Code Docs][4])
+Claude Code公式ドキュメントでも、ローカルstdioサーバーは `claude mcp add [options] <name> -- <command> [args...]` の形式で追加すると説明されてる。([Claude Code Docs][4])
 
 ```bash
 claude mcp add --transport stdio my-first-mcp-server -- \
   npx tsx /absolute/path/to/my-first-mcp-server/src/server.ts
 ```
 
-登録できたか確認します。
+登録できたか確認する。
 
 ```bash
 claude mcp list
 ```
 
-Claude Code内では、以下のコマンドで接続状態を確認できます。
+Claude Code内では、こんなコマンドで接続状態を確認できる。
 
 ```txt
 /mcp
 ```
 
-その後、Claude Codeに以下のように聞いてみます。
+その後、Claude Codeにこう聞いてみる。
 
 ```txt
 add toolを使って、123と456を足してください
 ```
 
-Claude CodeがMCP Toolを呼び出し、結果を返してくれれば接続成功です。
+Claude CodeがMCP Toolを呼び出して、結果を返してくれれば接続成功。
 
 ---
 
 ## もう少し実用的なToolを作る
 
-足し算だけだと実務感が薄いので、次は「プロジェクト配下のファイルを読むTool」を作ってみます。
+足し算だけだと実務感が薄いので、次は「プロジェクト配下のファイルを読むTool」を作ってみる。
 
-ただし、AIにファイル操作を許す場合は安全設計が重要です。
+ただ、AIにファイル操作を許す場合は安全設計が重要。
 
-最初にありがちな危険な実装は、以下のようなものです。
+最初にありがちな危険な実装はこんなやつ。
 
 ```ts
 const text = await readFile(path, "utf-8");
 ```
 
-これだと、AIが意図せずプロジェクト外のファイルを読んでしまう可能性があります。
+これだと、AIが意図せずプロジェクト外のファイルを読んでしまう可能性がある。
 
-そこで、今回は **プロジェクトルート配下だけ読める** ようにします。
+なので今回は **プロジェクトルート配下だけ読める** ようにする。
 
 ```ts
 import path from "node:path";
@@ -529,7 +529,7 @@ server.tool(
 await server.connect(new StdioServerTransport());
 ```
 
-ポイントは、以下です。
+ポイントはこのあたり。
 
 | 観点 | 内容 |
 | --- | --- |
@@ -538,7 +538,7 @@ await server.connect(new StdioServerTransport());
 | 範囲制限 | `projectRoot` 配下だけ許可する |
 | エラー | `isError: true` でAIが理解しやすい形にする |
 
-MCPのTools仕様でも、Tool実行エラーは `isError: true` で返せると説明されています。また、Tool Execution Errorは、モデルが自己修正して再試行できるような実行時エラーに使われます。([Tools - Model Context Protocol][5])
+MCPのTools仕様でも、Tool実行エラーは `isError: true` で返せると説明されてる。Tool Execution Errorは、モデルが自己修正して再試行できるような実行時エラーに使われる。([Tools - Model Context Protocol][5])
 
 ---
 
@@ -546,11 +546,11 @@ MCPのTools仕様でも、Tool実行エラーは `isError: true` で返せると
 
 ### 1. 最初はRead-onlyから始める
 
-MCP Serverは、AIエージェントに外部操作を許す仕組みです。
+MCP Serverは、AIエージェントに外部操作を許す仕組み。
 
-そのため、最初から更新・削除・送信のような副作用の強いToolを作ると危険です。
+なので、最初から更新・削除・送信みたいな副作用の強いToolを作ると危険。
 
-まずはRead-onlyから始めるのがおすすめです。
+まずはRead-onlyから始めるのがおすすめ。
 
 ```mermaid
 flowchart TD
@@ -560,7 +560,7 @@ flowchart TD
     D --> E[自動実行・ワークフロー化]
 ```
 
-特に、以下のようなものは慎重に扱うべきです。
+特にこのあたりは慎重に扱った方がいい。
 
 | 対象 | 注意点 |
 | --- | --- |
@@ -571,21 +571,21 @@ flowchart TD
 | 顧客情報 | 認可、監査ログ、出力制限を入れる |
 | メール・Slack | 送信前に人間の確認を入れる |
 
-公式仕様でも、MCPは任意のデータアクセスやコード実行経路を可能にするため、セキュリティとTrust & Safetyを慎重に扱う必要があるとされています。([Model Context Protocol][1])
+公式仕様でも、MCPは任意のデータアクセスやコード実行経路を可能にするため、セキュリティとTrust & Safetyを慎重に扱う必要があるとされてる。([Model Context Protocol][1])
 
 ---
 
 ### 2. Toolは小さく作る
 
-悪い例です。
+悪い例。
 
 ```txt
 manage_project()
 ```
 
-これだと、何ができるのか曖昧です。
+これだと、何ができるのか曖昧。
 
-良い例です。
+良い例。
 
 ```txt
 list_issues()
@@ -594,13 +594,13 @@ create_issue()
 summarize_issue()
 ```
 
-AIに使わせるToolは、人間向けAPIよりも **意図が明確** な方が使いやすいです。
+AIに使わせるToolは、人間向けAPIよりも **意図が明確** な方が使いやすい。
 
 ---
 
 ### 3. Tool名はAIが理解しやすくする
 
-良いTool名の例です。
+良いTool名の例。
 
 | 良いTool名 | 理由 |
 | --- | --- |
@@ -609,7 +609,7 @@ AIに使わせるToolは、人間向けAPIよりも **意図が明確** な方�
 | `get_latest_sales_summary` | 取得対象が明確 |
 | `validate_sql_readonly` | 安全目的が明確 |
 
-悪いTool名の例です。
+悪いTool名の例。
 
 | 悪いTool名 | 問題 |
 | --- | --- |
@@ -618,23 +618,23 @@ AIに使わせるToolは、人間向けAPIよりも **意図が明確** な方�
 | `handle` | 抽象的すぎる |
 | `process_data` | 入出力が分からない |
 
-MCPのTools仕様でも、Toolは名前、説明、入力スキーマなどのメタデータを持つと説明されています。Tool名は1〜128文字で、スペースや特殊文字を避けることが推奨されています。([Tools - Model Context Protocol][5])
+MCPのTools仕様でも、Toolは名前、説明、入力スキーマなどのメタデータを持つと説明されてる。Tool名は1〜128文字で、スペースや特殊文字を避けることが推奨されてる。([Tools - Model Context Protocol][5])
 
 ---
 
 ### 4. 入力スキーマを厳密にする
 
-MCP Toolは、AIが引数を組み立てます。
+MCP Toolは、AIが引数を組み立てる。
 
-そのため、曖昧な入力は避けた方がよいです。
+なので、曖昧な入力は避けた方がいい。
 
-悪い例です。
+悪い例。
 
 ```ts
 query: z.string()
 ```
 
-良い例です。
+良い例。
 
 ```ts
 customerId: z.string().describe("Customer ID. Example: CUST-001")
@@ -642,7 +642,7 @@ fromDate: z.string().describe("Start date. Format: YYYY-MM-DD")
 toDate: z.string().describe("End date. Format: YYYY-MM-DD")
 ```
 
-AIが迷わないように、以下を明確にします。
+AIが迷わないように、このあたりを明確にする。
 
 | 観点 | 例 |
 | --- | --- |
@@ -655,21 +655,21 @@ AIが迷わないように、以下を明確にします。
 
 ### 5. エラーはAIが直せる形で返す
 
-悪い例です。
+悪い例。
 
 ```txt
 Error: invalid input
 ```
 
-良い例です。
+良い例。
 
 ```txt
 fromDate must be YYYY-MM-DD format. Example: 2026-05-01
 ```
 
-AIエージェントは、エラー内容が具体的なら自分で修正して再実行できます。
+AIエージェントは、エラー内容が具体的なら自分で修正して再実行できる。
 
-特に以下のような情報を返すと、AIが復旧しやすくなります。
+特にこういう情報を返すと、AIが復旧しやすくなる。
 
 | 含める情報 | 例 |
 | --- | --- |
@@ -682,11 +682,11 @@ AIエージェントは、エラー内容が具体的なら自分で修正して
 
 ## C# / .NETで作る場合
 
-.NETエンジニアなら、C# SDKでMCP Serverを作るのも自然です。
+.NETエンジニアなら、C# SDKでMCP Serverを作るのも自然な選択。
 
-公式C# SDKのGetting Startedでは、`WithStdioServerTransport()` と `WithToolsFromAssembly()` を使い、属性付きメソッドをToolとして公開する例が紹介されています。([MCP C# SDK][6])
+公式C# SDKのGetting Startedでは、`WithStdioServerTransport()` と `WithToolsFromAssembly()` を使って、属性付きメソッドをToolとして公開する例が紹介されてる。([MCP C# SDK][6])
 
-最小のstdio MCP Serverは以下のように書けます。
+最小のstdio MCP Serverはこう書ける。
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -717,9 +717,9 @@ public static class EchoTool
 }
 ```
 
-WPF、ASP.NET Core、社内業務API、金融系ツールなどをMCP化したい場合、C# SDKは相性が良いです。
+WPF、ASP.NET Core、社内業務API、金融系ツールなどをMCP化したい場合、C# SDKは相性が良い。
 
-特に、既存の.NET資産がある場合は、以下のようなMCP Serverを作れます。
+特に既存の.NET資産がある場合は、こんなMCP Serverを作れる。
 
 | 既存資産 | MCP化の例 |
 | --- | --- |
@@ -733,7 +733,7 @@ WPF、ASP.NET Core、社内業務API、金融系ツールなどをMCP化した�
 
 ## 実用例：自社SaaSをMCP化するなら
 
-たとえば、予約管理SaaSをMCP化するなら、以下のようなTool設計が考えられます。
+たとえば、予約管理SaaSをMCP化するなら、こんなTool設計が考えられる。
 
 | Tool | 説明 | 最初の安全度 |
 | --- | --- | --- |
@@ -754,15 +754,15 @@ flowchart LR
     App --> Line[LINE通知]
 ```
 
-この構成にすると、AIに対して以下のように依頼できます。
+この構成にすると、AIに対してこう依頼できる。
 
 ```txt
 明日の予約状況を確認して、空き枠を教えて
 ```
 
-AIはMCP Server経由で予約情報を取得し、自然言語で回答できます。
+AIはMCP Server経由で予約情報を取得して、自然言語で回答できる。
 
-ただし、予約作成やキャンセルのような副作用のある操作は、最初から完全自動化しない方が安全です。
+ただ、予約作成やキャンセルみたいな副作用のある操作は、最初から完全自動化しない方が安全。
 
 ```mermaid
 sequenceDiagram
@@ -788,7 +788,7 @@ sequenceDiagram
 
 ## MCPを自作すべきケース・しないケース
 
-MCPは便利ですが、何でもMCPにすればよいわけではありません。
+MCPは便利だけど、何でもMCPにすればいいわけじゃない。
 
 | 判断軸 | MCPが向いている | MCPでなくてよい |
 | --- | --- | --- |
@@ -800,17 +800,17 @@ MCPは便利ですが、何でもMCPにすればよいわけではありませ�
 | 社内ツールのAI操作 | ◎ | △ |
 | 高リスクな本番操作 | 慎重に設計 | 直接自動化は避ける |
 
-MCPは「普通のAPIの代替」ではありません。
+MCPは「普通のAPIの代替」じゃない。
 
-むしろ、**AIエージェントが安全に使えるようにラップしたインターフェース層** と考えると分かりやすいです。
+むしろ、**AIエージェントが安全に使えるようにラップしたインターフェース層** と考えると分かりやすい。
 
 ---
 
 ## まとめ
 
-MCPは、AIエージェントに外部ツールやデータソースを接続するための標準プロトコルです。
+MCPは、AIエージェントに外部ツールやデータソースを接続するための標準プロトコル。
 
-重要なポイントは以下です。
+重要なポイントはこのあたり。
 
 | ポイント | 内容 |
 | --- | --- |
@@ -822,9 +822,9 @@ MCPは、AIエージェントに外部ツールやデータソースを接続す
 | 自作の第一歩 | 小さなstdio Toolから作る |
 | 実務の注意 | Read-only、入力スキーマ、安全設計、認可、監査ログ |
 
-AIエージェント時代の開発では、単にアプリを作るだけでなく、**AIが安全に操作できるインターフェースを設計する力** が重要になります。
+AIエージェント時代の開発では、単にアプリを作るだけじゃなく、**AIが安全に操作できるインターフェースを設計する力** が重要になってくる。
 
-最初に作るなら、以下のような小さなMCP Serverがおすすめです。
+最初に作るなら、こういう小さなMCP Serverがおすすめ。
 
 ```txt
 - プロジェクトのREADMEを読む
@@ -834,9 +834,9 @@ AIエージェント時代の開発では、単にアプリを作るだけでな
 - DBをread-onlyで検索する
 ```
 
-小さなToolを積み上げることで、自分専用のAI開発環境を作れます。
+小さなToolを積み上げることで、自分専用のAI開発環境を作れる。
 
-MCPは、AIに「知識」だけでなく「手」を与えるための仕組みです。
+MCPは、AIに「知識」だけじゃなく「手」を与えるための仕組み。
 
 ---
 

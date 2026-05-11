@@ -65,7 +65,7 @@ topics:
     priority: 3
     status: pending
   - id: A-08-intro
-    title: "MCPの仕組みと自作する方法：AIエージェントに\"道具\"を渡す入門"
+    title: "MCPの仕組みと軽く自作してみる"
     axis: claude-code
     priority: 2
     status: published
