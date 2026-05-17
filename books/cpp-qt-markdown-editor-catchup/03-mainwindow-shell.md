@@ -21,6 +21,8 @@ src/
     DocumentManager.cpp
 ```
 
+![QMainWindow を中心としたウィンドウ構成 — MenuBar / Sidebar (Dock) / 中央 EditorPane / StatusBar の典型レイアウト](/books/cpp-qt-markdown-editor-catchup/images/mainwindow-layout.png)
+
 ## main.cpp
 
 ```cpp

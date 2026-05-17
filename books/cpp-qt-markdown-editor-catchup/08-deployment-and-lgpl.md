@@ -38,6 +38,8 @@ hdiutil create \
 
 サイズ目安: **約 80-120MB** (QtWebEngineCore + Chromium が大半)。
 
+![macOS DMG インストーラのドラッグ&ドロップ画面 — `macdeployqt + hdiutil` で生成した結果](/books/cpp-qt-markdown-editor-catchup/images/dmg-installer-macos.png)
+
 ### Apple Silicon と Intel の universal binary
 
 `CMAKE_OSX_ARCHITECTURES="arm64;x86_64"` を指定すれば universal binary を吐ける。だが、Homebrew Qt は arm64 only なので vcpkg + 自前 build が必要。最初は arm64 only でリリースして、需要があれば universal を考えるほうが現実的。
@@ -176,6 +178,8 @@ LGPL の核心は「ユーザーが Qt を別バージョンに置き換える�
 ### 義務 5: 自分のアプリのコードは LGPL を継承しなくて良い
 
 LGPL は「動的リンクなら自分のコードは別ライセンスで配って良い」。ここが GPL との最大の違いで、これがあるから商用配布できる。
+
+![LGPL v3 §4 主要義務チェックリスト — 動的リンク / ライセンス本文同梱 / 改造ソース公開 / 差し替え権利保証 / Combined Work 提供 / §4(d)(1) relinkable](/books/cpp-qt-markdown-editor-catchup/images/lgpl-checklist.svg)
 
 ### 義務 6 (見落とし注意): ユーザーが Qt を差し替えた変更版を実行できる手段の提供 (§4 (d)(1))
 

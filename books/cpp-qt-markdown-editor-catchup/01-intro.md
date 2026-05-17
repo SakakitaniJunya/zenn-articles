@@ -16,6 +16,23 @@ free: true
 
 **本書の結論: ④ Qt6 + QWebEngine を選ぶ — 起動 0.5 秒 + OS 統合 + Web 技術の WYSIWYG を全部取る**。理由を 3 つに絞って書く。
 
+```mermaid
+quadrantChart
+    title 起動速度 × ネイティブ感 (右上が理想)
+    x-axis 低速起動 --> 高速起動
+    y-axis 弱い OS 統合 --> 強い OS 統合
+    quadrant-1 ⭕ 本書の領域
+    quadrant-2 ⚠️ ネイティブ寄りだが重い
+    quadrant-3 ❌ 採用理由なし
+    quadrant-4 速いが OS と離れる
+    Electron: [0.2, 0.35]
+    Tauri (Rust): [0.75, 0.45]
+    Flutter Desktop: [0.6, 0.55]
+    Qt6 + QWebEngine: [0.7, 0.8]
+```
+
+> 本書で扱う Qt6 + QWebEngine は「起動速度では Tauri に少し劣るが、OS 統合の深さで圧倒する」象限を狙う選択。
+
 ## 1. WYSIWYG エディタ部分は Web 技術で書きたい
 
 Markdown WYSIWYG エディタの中身は実質「リッチテキストエディタ + Markdown シリアライズ + KaTeX / Mermaid / Syntax Highlight」の塊で、これを native で 1 から書くのは現実的でない。**Web 技術 (TipTap / CodeMirror / ProseMirror) を WebView で動かすのが最短**。

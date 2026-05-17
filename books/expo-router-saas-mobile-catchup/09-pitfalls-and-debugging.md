@@ -23,6 +23,8 @@ pnpm expo start --clear
 
 これを「設定を疑う前の第一手」として身につける。筆者は 10 時間溶かした。
 
+![NativeWind cache 腐敗で class が半分しか効いていない画面 (border は当たっているが rounded-2xl が無視されている)](/books/expo-router-saas-mobile-catchup/images/pitfall-metro-cache-error.png)
+
 ## 2. iOS シミュレータで Metro projectRoot を誤認
 
 ### 症状
@@ -127,6 +129,8 @@ await SecureStore.setItemAsync(KEY, value, {
 ```
 
 `pnpm` の `resolutions` は基本無視されるので、**pnpm.overrides を必ず使う**。`pnpm dedupe` で 1 つに揃っているか確認。
+
+![iOS Maestro E2E が 0/17 で全部こけた画面 — react-native-worklets が dual install されているサイン](/books/expo-router-saas-mobile-catchup/images/pitfall-ios-triple-blocker.png)
 
 ## 7. ngrok-free tunnel が user 占有で他の Mac から繋がらない
 

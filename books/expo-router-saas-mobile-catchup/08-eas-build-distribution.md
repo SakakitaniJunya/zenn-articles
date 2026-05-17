@@ -4,6 +4,8 @@ title: "EAS Build — 4 プロファイル設計で社内配布から本番ス�
 
 ローカルで `pnpm ios` / `pnpm android` が動いたら次は配布。Expo Application Services (EAS) Build を使うと、Apple / Google の証明書周りをクラウドに任せて任意の OS でビルドできる。本章では実運用で必要な 4 プロファイルを設計する。
 
+![EAS Build ダッシュボード — 各プロファイルのビルド履歴と QR コード配布画面](/books/expo-router-saas-mobile-catchup/images/eas-dashboard.png)
+
 ## eas.json 最小構成
 
 ```jsonc
@@ -70,6 +72,8 @@ npx eas-cli build --profile development --platform android
 ### internal
 
 社内テスター 5〜10 人に APK だけ配りたい時。Play Console を経由しないので即配布できる。`distribution: "internal"` + `android.buildType: "apk"` がポイント。EAS のダッシュボードから QR コードを生成して Slack で投げるだけ。
+
+![EAS internal distribution — QR コード共有画面 (社内テスターが QR を読むと APK ダウンロード)](/books/expo-router-saas-mobile-catchup/images/eas-internal-qr.png)
 
 ### preview
 

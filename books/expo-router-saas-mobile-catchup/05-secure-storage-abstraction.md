@@ -56,6 +56,20 @@ export async function getToken(): Promise<string | null> {
 
 これだけ。残りの全コードは `saveSession` / `loadSession` / `clearSession` を呼ぶだけで、内部の Platform 分岐を意識しなくてよくなる。
 
+```mermaid
+flowchart LR
+    App["App コード<br/>saveSession / loadSession"]
+    Abs["lib/auth-storage.ts<br/>(Platform 分岐)"]
+    Native["expo-secure-store<br/>(iOS Keychain / Android EncryptedSharedPreferences)"]
+    Web["localStorage<br/>(Web プレビュー用 fallback)"]
+
+    App --> Abs
+    Abs -->|Platform.OS !== "web"| Native
+    Abs -->|Platform.OS === "web"| Web
+```
+
+抽象化を 1 ファイルに閉じ込めることで、Auth Context や Push 通知の token 保存も同じインターフェース越しに使える。
+
 ## Auth Context との接続
 
 React Context に session を持たせる典型形:

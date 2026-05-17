@@ -153,6 +153,8 @@ NativeWind を入れて 2-3 週間使うと、ほぼ全員が遭遇する症状�
 
 これは **Metro のキャッシュと Expo のキャッシュが腐っているだけ** の場合がほとんどだ。NativeWind v4 は generated CSS を `.expo` / `node_modules/.cache` に置くため、上書きが間に合わないことがある。
 
+![NativeWind class が「効く前 / 効いた後」の対比 (左: cache 腐敗で半分しか効いていない、右: cache クリア後の正常表示)](/books/expo-router-saas-mobile-catchup/images/nativewind-effect-before-after.png)
+
 ```bash
 rm -rf .expo node_modules/.cache
 pnpm expo start --clear

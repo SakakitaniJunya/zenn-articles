@@ -111,7 +111,28 @@ void EditorPane::onLoadFinished(bool ok) {
 }
 ```
 
+![WebView 初期化順を間違えた時の真っ黒画面 (左) と、正しい順で初期化した正常画面 (右)](/books/cpp-qt-markdown-editor-catchup/images/qwebengine-init-flow.svg)
+
 ## 初期化順の罠
+
+```mermaid
+flowchart TD
+    Start([アプリ起動]) --> A1["1. Qt::AA_ShareOpenGLContexts<br/>を QApplication 前にセット"]
+    A1 --> A2["2. QApplication 構築"]
+    A2 --> A3["3. QWebEngineView を new<br/>(layout 経由でサイズ確保)"]
+    A3 --> A4["4. QWebChannel を生成"]
+    A4 --> A5["5. setWebChannel(channel)"]
+    A5 --> A6["6. registerObject() で<br/>全 Bridge を登録"]
+    A6 --> A7["7. load(URL) を呼ぶ"]
+    A7 --> Ready([WebView 起動])
+
+    A1 -.skip.-> Black[("真っ黒画面 / OpenGL warning")]
+    A6 -.順序逆転.-> Undef[("channel.objects.editor<br/>=== undefined")]
+
+    style Black fill:#fee,stroke:#c66
+    style Undef fill:#fee,stroke:#c66
+    style Ready fill:#efe,stroke:#6c6
+```
 
 WebEngine は **QApplication 構築後に初めて使える** が、それだけでなく:
 

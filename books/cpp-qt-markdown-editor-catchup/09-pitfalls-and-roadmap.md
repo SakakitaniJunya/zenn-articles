@@ -21,6 +21,8 @@ QApplication app(argc, argv);
 
 これを忘れると、QWebEngineView が画面に出ても中身が render されない。warning ログに `OpenGL context could not be shared` が出ているはず。
 
+![QWebEngineView が真っ黒のまま表示される画面 — `AA_ShareOpenGLContexts` 未設定時の典型症状](/books/cpp-qt-markdown-editor-catchup/images/pitfall-blackscreen.png)
+
 ## 3. qwebchannel.js が読めない
 
 ```html

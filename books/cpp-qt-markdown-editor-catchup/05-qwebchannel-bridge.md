@@ -278,6 +278,37 @@ import { mountEditor } from "./editor";
 
 `registerObject` を 4 回呼ぶだけで、JS 側に `channel.objects.editor` `channel.objects.outline` `channel.objects.search` `channel.objects.theme` が生える。
 
+```mermaid
+flowchart LR
+    subgraph Cpp ["C++ Native 側"]
+        EB["EditorBridge<br/>(file I/O)"]
+        OB["OutlineBridge<br/>(heading push)"]
+        SB["SearchBridge<br/>(hit pos)"]
+        TB["ThemeBridge<br/>(CSS vars)"]
+    end
+
+    Channel(("1 個の<br/>QWebChannel"))
+
+    subgraph Js ["JS WebView 側"]
+        JE["channel.objects.editor"]
+        JO["channel.objects.outline"]
+        JS2["channel.objects.search"]
+        JT["channel.objects.theme"]
+    end
+
+    EB -- registerObject(\"editor\") --> Channel
+    OB -- registerObject(\"outline\") --> Channel
+    SB -- registerObject(\"search\") --> Channel
+    TB -- registerObject(\"theme\") --> Channel
+
+    Channel -.qwebchannel.js.-> JE
+    Channel -.qwebchannel.js.-> JO
+    Channel -.qwebchannel.js.-> JS2
+    Channel -.qwebchannel.js.-> JT
+```
+
+責務が綺麗に 4 つに割れているので、後で「Comment Bridge」「Spellcheck Bridge」を足したくなった時も `registerObject` を 1 回追加するだけで済む。
+
 ## 落とし穴
 
 1. **`registerObject` の名前と JS 側で使う名前を間違える** と silent fail (undefined になる)。constexpr で定数化推奨

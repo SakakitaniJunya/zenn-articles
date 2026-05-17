@@ -162,6 +162,8 @@ export function mountSourceMode(root: HTMLElement, initial: string): {
 
 WYSIWYG と Source mode の切り替えは「現在の markdown を取り出して、もう一方の mode の初期値として渡す」だけのシンプルなロジックで実現できる。
 
+![WYSIWYG モード (左) と Source モード (右) のトグル — 同じ markdown が両方の view で同期する](/books/cpp-qt-markdown-editor-catchup/images/tiptap-codemirror-toggle.png)
+
 ## KaTeX で数式
 
 markdown-it に plugin を入れるとブロック/インライン数式を `<span class="katex">` に変換できる。

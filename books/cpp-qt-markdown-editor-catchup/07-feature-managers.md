@@ -308,6 +308,33 @@ connect(m_documentManager.get(), &DocumentManager::documentSaved,
         });
 ```
 
+```mermaid
+flowchart TB
+    MW{{"MainWindow<br/>(Signal Hub)"}}
+    DM["DocumentManager"]
+    TM["ThemeManager"]
+    ASM["AutoSaveManager"]
+    EM["ExportManager"]
+
+    EB["EditorBridge"]
+    TB["ThemeBridge"]
+    OB["OutlineBridge"]
+    SB["SearchBridge"]
+
+    DM --- MW
+    TM --- MW
+    ASM --- MW
+    EM --- MW
+    MW --- EB
+    MW --- TB
+    MW --- OB
+    MW --- SB
+
+    style MW fill:#ffe,stroke:#cc6,stroke-width:2px
+```
+
+> Manager 同士は直接 connect せず、必ず **MainWindow (Hub)** を経由する star topology。これで Manager の単体テストが書きやすく、循環依存も発生しない。
+
 ## なぜ Manager を分けるか
 
 - **テストが書きやすい**: 各 Manager は QApplication 無しで unit test できる
