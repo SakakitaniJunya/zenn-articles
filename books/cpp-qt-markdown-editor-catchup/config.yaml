@@ -1,0 +1,30 @@
+title: "Electron をやめて C++/Qt6 で Markdown エディタを 9 章で作る"
+summary: |
+  Typora / Obsidian のような Markdown エディタを Electron でなく C++/Qt で作りたい。
+  本書は C++20 + Qt6 Widgets + QWebEngineView + QWebChannel + Vite (TipTap / CodeMirror)
+  というハイブリッド構成で、ネイティブシェルと WebView エディタを QWebChannel で双方向接続する
+  実装パターンを 1 から解説する。
+
+  CMake + vcpkg / apt の 2 系統環境構築、3 OS (macOS / Windows / Linux) でビルドが通る
+  プロジェクト構成、QWebChannel の JSON メッセージ設計、配布時の LGPL 動的リンク + ソース提供義務、
+  macdeployqt の罠まで実装ガイドとして扱う。Qt は未経験で OK、CMake は読めれば OK の入り口で、
+  Qt 6.8+ の最新 API を前提にコード例を 9 章にまとめている。
+
+  各章のコードは特定プロダクト非依存の最小サンプルで、自分の repo に貼って動かしやすい形で提示する。
+  著者は 2026 年に AI 駆動開発時代の Markdown 専用 reader「Colason」を C++/Qt6 ハイブリッドで
+  プロトタイプした経験を基にしている。本書は学習記録 + 設計パターンであり、紹介する Colason は
+  ideation 段階 (PMF 検証は 2026-06-15 判定予定)。詳細は最終章を参照。
+
+topics: ["cpp", "qt", "electron", "desktop", "markdown"]
+published: false
+price: 0
+chapters:
+  - 01-intro
+  - 02-cmake-vcpkg-qt6-setup
+  - 03-mainwindow-shell
+  - 04-qwebengineview-embedding
+  - 05-qwebchannel-bridge
+  - 06-web-side-tiptap-codemirror
+  - 07-feature-managers
+  - 08-deployment-and-lgpl
+  - 09-pitfalls-and-roadmap

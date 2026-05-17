@@ -1,0 +1,32 @@
+title: "Next.js から 2 週間で iOS/Android を出す Expo Router 実践"
+summary: |
+  Next.js で動いている Web SaaS にモバイルアプリ版を足したい。新規 RN プロジェクトをゼロから立てる
+  のではなく、既存の認証・API・型・Tailwind トークンを最大限再利用しながら、Expo Router (file-based
+  routing) で iOS / Android / Web 同居の単一ツリーを 2 週間で立ち上げるための実践ガイド。
+
+  Expo SDK 54 / Expo Router 6 / RN 0.81 / React 19 / NativeWind v4 (Tailwind v3.4) を前提に、
+  Web 側 NextAuth と JWT を共有する自前モバイル認証、SecureStore / localStorage 抽象化、
+  `/api/mobile/*` ネームスペース、Push 通知、ストア配布 (EAS Build) までを 9 章で扱う。
+  コードは特定アプリ非依存の最小サンプルで、自分のプロジェクトに移植しやすいコピペ可能な形で提示する。
+
+  ゼロから RN を学ぶ本ではなく、**既存 Web SaaS の資産を最大流用してモバイルを足す本**。
+  Solo CEO や〜5 名チームで Web SaaS を運用していて、Swift / Kotlin を雇わずに mobile を
+  出したい人を想定読者にしている。
+
+  著者は 2026 年に Web SaaS のモバイル版を 1 人 CEO 体制でゼロから立ち上げた経験を基にし、
+  10 時間溶かしたハマり (NativeWind cache 腐敗 / Metro projectRoot / expo prebuild --clean
+  の破壊性 / iOS triple blocker 等) も実話として 9 章に収録している。
+
+topics: ["expo", "reactnative", "nativewind", "monorepo", "typescript"]
+published: false
+price: 0
+chapters:
+  - 01-intro
+  - 02-expo-router-skeleton
+  - 03-nativewind-token-share
+  - 04-jwt-auth-share
+  - 05-secure-storage-abstraction
+  - 06-mobile-api-namespace
+  - 07-push-notifications
+  - 08-eas-build-distribution
+  - 09-pitfalls-and-debugging
