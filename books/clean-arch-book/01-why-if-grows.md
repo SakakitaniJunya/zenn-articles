@@ -65,16 +65,15 @@ public async Task<Result> HandleAsync(CreateOrderCommand cmd, CancellationToken 
 git の履歴を辿ると、このコードは次のように成長していた。
 
 ```mermaid
-gitGraph
-    commit id: "初期(30行)"
-    commit id: "+ Express対応"
-    commit id: "+ Coupon"
-    commit id: "+ Promotion"
-    commit id: "+ AutoConfirm"
-    commit id: "+ VIP分岐"
-    commit id: "+ 自動確定の例外条件"
-    commit id: "+ Kafka 抑制ロジック"
-    commit id: "現在(400行)"
+flowchart LR
+    A["初期<br/>30 行"] --> B["Express<br/>対応 追加"]
+    B --> C["Coupon<br/>追加"]
+    C --> D["Promotion<br/>追加"]
+    D --> E["AutoConfirm<br/>追加"]
+    E --> F["VIP 分岐<br/>追加"]
+    F --> G["自動確定の<br/>例外条件 追加"]
+    G --> H["Kafka 抑制<br/>ロジック 追加"]
+    H --> I["現在<br/>400 行"]
 ```
 
 各コミット自体は「機能追加」として正しく見える。レビュアーも「`if (cmd.HasCoupon) { ... }` を足す」変更を止める理由はない。**1 つ 1 つの diff は無害なのに、6 ヶ月後の総体が腐っている**。
@@ -93,17 +92,17 @@ gitGraph
 
 ```mermaid
 flowchart LR
-    Start --> If1{isExpress?}
-    If1 -->|Yes| A1[速達処理]
-    If1 -->|No| A2[通常処理]
-    A1 --> If2{hasCoupon?}
+    Start([Start]) --> If1{"isExpress ?"}
+    If1 -->|Yes| A1["速達処理"]
+    If1 -->|No| A2["通常処理"]
+    A1 --> If2{"hasCoupon ?"}
     A2 --> If2
-    If2 -->|Yes| B1[クーポン適用]
-    If2 -->|No| B2[適用なし]
-    B1 --> If3{isAutoConfirm?}
+    If2 -->|Yes| B1["クーポン適用"]
+    If2 -->|No| B2["適用なし"]
+    B1 --> If3{"isAutoConfirm ?"}
     B2 --> If3
-    If3 -->|Yes| C1[自動確定]
-    If3 -->|No| C2[手動確定待ち]
+    If3 -->|Yes| C1["自動確定"]
+    If3 -->|No| C2["手動確定待ち"]
 ```
 
 **症状**: `if (isXxx)` が同じメソッドの中に 3 個、5 個、10 個と並んでいく。
@@ -168,18 +167,24 @@ frontend/components/Form.tsx         ← if (status === "Confirmed") ...
 
 ```mermaid
 flowchart LR
-    subgraph Anemic["🤕 Anemic Domain Model"]
-        A_Order["Order<br/>(public setter のみ)"]
-        A_H1["Handler A"] -.->|Status を読み<br/>判断し<br/>書き換える| A_Order
-        A_H2["Handler B"] -.->|同じ判断を<br/>転記する| A_Order
-        A_H3["Handler C"] -.->|また転記| A_Order
+    subgraph Anemic["Anemic Domain Model"]
+        A_Order["Order<br/>public setter のみ"]
+        A_H1["Handler A"]
+        A_H2["Handler B"]
+        A_H3["Handler C"]
+        A_H1 -.->|"Status を読み 判断し 書き換える"| A_Order
+        A_H2 -.->|"同じ判断を転記する"| A_Order
+        A_H3 -.->|"また転記"| A_Order
     end
 
-    subgraph Rich["💪 Rich Domain Model"]
-        R_Order["Order<br/>(振る舞いを持つ)<br/>・Confirm()<br/>・Cancel()<br/>・MarkAsFulfilled()"]
-        R_H1["Handler A"] -->|order.Confirm()| R_Order
-        R_H2["Handler B"] -->|order.Cancel()| R_Order
-        R_H3["Handler C"] -->|order.MarkAsFulfilled()| R_Order
+    subgraph Rich["Rich Domain Model"]
+        R_Order["Order 振る舞いを持つ<br/>Confirm / Cancel / MarkAsFulfilled"]
+        R_H1["Handler A"]
+        R_H2["Handler B"]
+        R_H3["Handler C"]
+        R_H1 -->|"order.Confirm()"| R_Order
+        R_H2 -->|"order.Cancel()"| R_Order
+        R_H3 -->|"order.MarkAsFulfilled()"| R_Order
     end
 ```
 
