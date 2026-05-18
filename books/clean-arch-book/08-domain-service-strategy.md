@@ -7,7 +7,7 @@ free: true
 
 > **この章のゴール**
 > - Domain Service が **「Entity に置きづらいロジック」の居場所** であることを理解する
-> - Strategy パターンで **環境モード分岐 / 拠点分岐** などのアンチパターンを解体できる
+> - Strategy パターンで **倉庫種別による SKU 組み立て分岐** などのアンチパターンを解体できる
 > - Strategy 化の判断基準を持ち、過剰適用を回避できる
 > - interface を Domain、実装を Infrastructure に置く DIP の実装を書ける
 
@@ -22,7 +22,7 @@ free: true
 | 複数 Aggregate にまたがる | `Order` と `Product Catalog` の在庫引当 |
 | 外部依存(DB / API / マスタ) が必要 | 税率マスタからの参照 |
 | ステートレスな計算式の集合 | 配送料の階段表 |
-| 戦略の入れ替えがある | 拠点ごとの顧客コード組み立て |
+| 戦略の入れ替えがある | 倉庫種別ごとの SKU 組み立て |
 
 これらに当てはまるロジックを Entity の中に書こうとすると、Entity に DI が必要になったり、Entity が外部システムを知ることになったりする。Clean Architecture の依存方向を破る。
 
@@ -30,7 +30,12 @@ free: true
 
 ## 8.2 アンチパターン — Infrastructure に業務ルールが漏れる
 
-「主要拠点 = 内部コードをそのまま使う、それ以外 = ダミー埋めで組み立てる」という業務ルールがあるとする。Anemic な実装はこうなる。
+EC サイトで複数の倉庫(自社倉庫 / 3PL 委託倉庫 / ドロップシップ)から商品を発送する状況を考える。SKU(商品識別コード)の生成ルールが倉庫タイプによって変わる:
+
+- **自社倉庫(OWN)** = 商品マスタに登録済みの内部 SKU をそのまま使う
+- **それ以外(3PL / ドロップシップ)** = マスタが無いので、倉庫コード + カテゴリ + 棚位置で組み立てる
+
+これを Anemic に書くとこうなる。
 
 ### Before
 
@@ -38,29 +43,30 @@ free: true
 // ❌ Infrastructure の Builder に業務ルールが直書き
 namespace MyApp.Infrastructure;
 
-public sealed class CustomerCodeBuilder(
-    IOptions<RegionSettings> region,
-    IOptions<DatabaseSettings> dbSettings) : ICustomerCodeBuilder
+public sealed class ProductSkuBuilder(
+    IOptions<CatalogSettings> catalog,
+    IOptions<DatabaseSettings> dbSettings) : IProductSkuBuilder
 {
     public Task<string> BuildAsync(
-        string? branchNo, string? partyCode, string? loc, string? accountNo, CancellationToken ct)
+        string? warehouseCode, string? categoryCode, string? bayCode, string? masterSku,
+        CancellationToken ct)
     {
-        var isPrimaryMode = string.Equals(
-            dbSettings.Value.Region, "PRIMARY", StringComparison.OrdinalIgnoreCase);
-        var hasParty = !string.IsNullOrWhiteSpace(partyCode);
+        var isOwnWarehouseMode = string.Equals(
+            dbSettings.Value.WarehouseType, "OWN", StringComparison.OrdinalIgnoreCase);
+        var hasCategory = !string.IsNullOrWhiteSpace(categoryCode);
 
-        if (isPrimaryMode && hasParty)
+        if (isOwnWarehouseMode && hasCategory)
         {
-            // 主拠点 + 顧客指定 → 別建てフォーマット
+            // 自社倉庫 + カテゴリ指定 → マスタの内部 SKU をそのまま使う
             return Task.FromResult(
-                CustomerCodeGenerator.FromCustomer(branchNo ?? "", accountNo ?? ""));
+                ProductSkuGenerator.FromMaster(warehouseCode ?? "", masterSku ?? ""));
         }
 
         // それ以外 → ダミー埋めしてフォーマット
-        var effBranch = string.IsNullOrEmpty(branchNo) ? region.Value.DummyBranch : branchNo;
-        var effParty  = string.IsNullOrEmpty(partyCode) ? region.Value.DummyParty  : partyCode;
-        var effLoc    = string.IsNullOrEmpty(loc)       ? region.Value.DummyLoc    : loc;
-        return Task.FromResult(CustomerCodeGenerator.Generate(effBranch, effParty, effLoc));
+        var effWarehouse = string.IsNullOrEmpty(warehouseCode) ? catalog.Value.DefaultWarehouse : warehouseCode;
+        var effCategory  = string.IsNullOrEmpty(categoryCode)  ? catalog.Value.DefaultCategory  : categoryCode;
+        var effBay       = string.IsNullOrEmpty(bayCode)       ? catalog.Value.DefaultBay       : bayCode;
+        return Task.FromResult(ProductSkuGenerator.Generate(effWarehouse, effCategory, effBay));
     }
 }
 ```
@@ -71,7 +77,7 @@ public sealed class CustomerCodeBuilder(
 flowchart TB
     subgraph Bad["❌ Before — 業務ルールが Infrastructure に居る"]
         H["Handler"] --> B
-        B["📍 CustomerCodeBuilder<br/>(Infrastructure 層)<br/><br/>if (isPrimaryMode &amp;&amp;<br/>     hasParty) {...}<br/>else {...}"]
+        B["📍 ProductSkuBuilder<br/>(Infrastructure 層)<br/><br/>if (isOwnWarehouseMode &amp;&amp;<br/>     hasCategory) {...}<br/>else {...}"]
     end
 ```
 
@@ -79,15 +85,15 @@ flowchart TB
 
 | 観点 | 影響 |
 | --- | --- |
-| 層責務 | 業務ルール(拠点 × 顧客有無) が Infrastructure 層に染み出している |
-| 概念の表現 | 「主拠点モード」が string 比較でしか表現されていない |
-| 拡張性 | 新拠点を足すと if が増殖する(OCP 違反) |
+| 層責務 | 業務ルール(倉庫種別 × カテゴリ有無) が Infrastructure 層に染み出している |
+| 概念の表現 | 「自社倉庫モード」が string 比較でしか表現されていない |
+| 拡張性 | 新しい倉庫種別を足すと if が増殖する(OCP 違反) |
 | テスト容易性 | Builder 全体を立ち上げないと検証できない |
-| 文字列分岐 | `"PRIMARY"` という魔法の文字列 — typo がコンパイル時に弾けない |
+| 文字列分岐 | `"OWN"` という魔法の文字列 — typo がコンパイル時に弾けない |
 
 判定表(第 5 章) に照らすと:
 
-- 「拠点モードの判定」は **外部依存(設定)を必要とする** → **Domain Service**(interface を Domain、実装を Infrastructure)
+- 「倉庫種別の判定」は **外部依存(設定)を必要とする** → **Domain Service**(interface を Domain、実装を Infrastructure)
 - 「組み立てルール」は **引数だけで結果が決まる純粋計算** → **VO / Calculator**
 - 「どちらの戦略を使うか」は **Strategy パターン** で分離
 
@@ -133,65 +139,66 @@ classDiagram
 
 ```csharp
 // =============== Domain 層 ===============
-namespace MyApp.Domain.Customers;
+namespace MyApp.Domain.Catalog;
 
 // 入力(VO)
-public sealed record CustomerCodeInput(
-    Region Region, string? BranchNo, string? PartyCode, string? Loc, string? AccountNo);
+public sealed record ProductSkuInput(
+    WarehouseType WarehouseType, string? WarehouseCode, string? CategoryCode,
+    string? BayCode, string? MasterSku);
 
-public sealed record Region(string Value)
+public sealed record WarehouseType(string Value)
 {
-    public static readonly Region Primary  = new("PRIMARY");
-    public static readonly Region Asia     = new("ASIA");
-    public static readonly Region Europe   = new("EUROPE");
+    public static readonly WarehouseType OwnWarehouse = new("OWN");
+    public static readonly WarehouseType ThirdParty   = new("3PL");
+    public static readonly WarehouseType DropShip     = new("DROPSHIP");
 }
 
 // Strategy interface
-public interface ICustomerCodeStrategy
+public interface IProductSkuStrategy
 {
-    bool CanHandle(CustomerCodeInput input);
-    string Build(CustomerCodeInput input);
+    bool CanHandle(ProductSkuInput input);
+    string Build(ProductSkuInput input);
 }
 
-// Strategy 1 — 主拠点 + 顧客指定
-public sealed class DirectCustomerCodeStrategy : ICustomerCodeStrategy
+// Strategy 1 — 自社倉庫 + マスタ登録済み
+public sealed class MasterSkuStrategy : IProductSkuStrategy
 {
-    public bool CanHandle(CustomerCodeInput x) =>
-        x.Region == Region.Primary && !string.IsNullOrWhiteSpace(x.PartyCode);
+    public bool CanHandle(ProductSkuInput x) =>
+        x.WarehouseType == WarehouseType.OwnWarehouse && !string.IsNullOrWhiteSpace(x.MasterSku);
 
-    public string Build(CustomerCodeInput x) =>
-        CustomerCode.FromMaster(x.BranchNo!, x.AccountNo!).ToString();
+    public string Build(ProductSkuInput x) =>
+        ProductSku.FromMaster(x.WarehouseCode!, x.MasterSku!).ToString();
 }
 
-// Strategy 2 — フォールバック(ダミー埋め)
-public sealed class FallbackCustomerCodeStrategy(IOptions<RegionSettings> region) : ICustomerCodeStrategy
+// Strategy 2 — フォールバック(ダミー埋めで組み立て)
+public sealed class FallbackSkuStrategy(IOptions<CatalogSettings> catalog) : IProductSkuStrategy
 {
-    public bool CanHandle(CustomerCodeInput _) => true;  // 常に true(最後尾に置く)
+    public bool CanHandle(ProductSkuInput _) => true;  // 常に true(最後尾に置く)
 
-    public string Build(CustomerCodeInput x)
+    public string Build(ProductSkuInput x)
     {
-        var r = region.Value;
-        return CustomerCode.Compose(
-            x.BranchNo ?? r.DummyBranch,
-            x.PartyCode ?? r.DummyParty,
-            x.Loc       ?? r.DummyLoc
+        var c = catalog.Value;
+        return ProductSku.Compose(
+            x.WarehouseCode ?? c.DefaultWarehouse,
+            x.CategoryCode  ?? c.DefaultCategory,
+            x.BayCode       ?? c.DefaultBay
         ).ToString();
     }
 }
 
 // Selector(束ねるだけ)
-public sealed class CustomerCodeBuilder(IEnumerable<ICustomerCodeStrategy> strategies)
-    : ICustomerCodeBuilder
+public sealed class ProductSkuBuilder(IEnumerable<IProductSkuStrategy> strategies)
+    : IProductSkuBuilder
 {
-    public string Build(CustomerCodeInput input) =>
+    public string Build(ProductSkuInput input) =>
         strategies.First(s => s.CanHandle(input)).Build(input);
 }
 
 // =============== Infrastructure 層 ===============
 // DI 登録(.NET DI コンテナ)
-services.AddScoped<ICustomerCodeStrategy, DirectCustomerCodeStrategy>();
-services.AddScoped<ICustomerCodeStrategy, FallbackCustomerCodeStrategy>();
-services.AddScoped<ICustomerCodeBuilder, CustomerCodeBuilder>();
+services.AddScoped<IProductSkuStrategy, MasterSkuStrategy>();
+services.AddScoped<IProductSkuStrategy, FallbackSkuStrategy>();
+services.AddScoped<IProductSkuBuilder, ProductSkuBuilder>();
 ```
 
 ### After の構造図
@@ -201,10 +208,10 @@ flowchart TB
     H["Handler"] --> Builder
 
     subgraph Domain["💎 Domain 層"]
-        Builder["CustomerCodeBuilder<br/>(束ねるだけ・40 行)"]
-        IStrat["ICustomerCodeStrategy"]
-        S1["DirectStrategy<br/>(主拠点+顧客)"]
-        S2["FallbackStrategy<br/>(その他)"]
+        Builder["ProductSkuBuilder<br/>(束ねるだけ・40 行)"]
+        IStrat["IProductSkuStrategy"]
+        S1["MasterSkuStrategy<br/>(自社倉庫+マスタ)"]
+        S2["FallbackSkuStrategy<br/>(3PL / ドロップシップ)"]
         Builder -->|"strategies.First(s =><br/>s.CanHandle(input))"| IStrat
         IStrat -.実装.-> S1
         IStrat -.実装.-> S2
@@ -217,9 +224,9 @@ flowchart TB
 
 | 観点 | Before | After |
 | --- | --- | --- |
-| 新拠点を足すとき | `if` を増やす + 既存ロジック修正 | クラスを 1 個足して DI 登録するだけ(**OCP**) |
+| 新しい倉庫種別を足すとき | `if` を増やす + 既存ロジック修正 | クラスを 1 個足して DI 登録するだけ(**OCP**) |
 | Strategy ごとの単体テスト | Builder 全体を立ち上げる必要 | Strategy 単独で `CanHandle`, `Build` をテスト可能 |
-| 業務概念の表現 | `"PRIMARY"` 文字列比較 | `Region.Primary` 型 |
+| 業務概念の表現 | `"OWN"` 文字列比較 | `WarehouseType.OwnWarehouse` 型 |
 | 層責務 | 業務ルールが Infrastructure に | 業務ルールが Domain に |
 | 順序の明示 | if/else の暗黙順序 | `strategies` リストの並びで明示 |
 
@@ -227,14 +234,14 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    Before["❌ Before<br/>新拠点 = if を増やす<br/>= 既存コード修正"]
-    After["✅ After<br/>新拠点 = 新クラス追加<br/>= 既存コード無傷"]
+    Before["❌ Before<br/>新倉庫種別 = if を増やす<br/>= 既存コード修正"]
+    After["✅ After<br/>新倉庫種別 = 新クラス追加<br/>= 既存コード無傷"]
 
     Before -.->|"OCP 違反"| Risk1["既存テストが<br/>壊れる可能性"]
     After -.->|"OCP 遵守"| Safe1["既存テストは<br/>無傷で残る"]
 ```
 
-「**修正に閉じ、拡張に開かれている**」のがまさにこの状態だ[^ocp].
+「**修正に閉じ、拡張に開かれている**」のがまさにこの状態だ[^ocp]。
 
 [^ocp]: Bertrand Meyer, *Object-Oriented Software Construction*, Prentice Hall, 1988. OCP の原典(Robert Martin が SOLID の "O" として再定式化)。
 
@@ -258,7 +265,7 @@ flowchart LR
 
 ### 判定の合言葉
 
-> **if が業務上の概念名(拠点・商品種別・会員区分など)で分岐しているか?**
+> **if が業務上の概念名(倉庫種別・商品種別・会員区分など)で分岐しているか?**
 >
 > - **Yes** → Strategy 化を検討
 > - **No**(null チェック / 早期 return / 単純ガード) → 通常の if のまま
@@ -396,15 +403,15 @@ public class TaxRateResolver(AppDbContext db) : ITaxRateResolver
 
 ```csharp
 // ❌ Selector が判断
-public string Build(CustomerCodeInput input)
+public string Build(ProductSkuInput input)
 {
-    if (input.Region == Region.Primary && !string.IsNullOrEmpty(input.PartyCode))
-        return strategies.OfType<DirectCustomerCodeStrategy>().Single().Build(input);
-    return strategies.OfType<FallbackCustomerCodeStrategy>().Single().Build(input);
+    if (input.WarehouseType == WarehouseType.OwnWarehouse && !string.IsNullOrEmpty(input.MasterSku))
+        return strategies.OfType<MasterSkuStrategy>().Single().Build(input);
+    return strategies.OfType<FallbackSkuStrategy>().Single().Build(input);
 }
 
 // ✅ Strategy が自分の適用可否を知っている
-public string Build(CustomerCodeInput input) =>
+public string Build(ProductSkuInput input) =>
     strategies.First(s => s.CanHandle(input)).Build(input);
 ```
 
@@ -446,18 +453,18 @@ public class TaxRateResolverTests
 Strategy の単体テストは超軽量:
 
 ```csharp
-public class DirectCustomerCodeStrategyTests
+public class MasterSkuStrategyTests
 {
     [Fact]
-    public void CanHandle_は_PrimaryRegion_かつ_PartyCode_あり_の時のみ_true()
+    public void CanHandle_は_OwnWarehouse_かつ_MasterSku_あり_の時のみ_true()
     {
-        var strategy = new DirectCustomerCodeStrategy();
-        Assert.True(strategy.CanHandle(new CustomerCodeInput(
-            Region.Primary, "B01", "P001", null, "A001")));
-        Assert.False(strategy.CanHandle(new CustomerCodeInput(
-            Region.Asia, "B01", "P001", null, "A001")));
-        Assert.False(strategy.CanHandle(new CustomerCodeInput(
-            Region.Primary, "B01", null, null, "A001")));
+        var strategy = new MasterSkuStrategy();
+        Assert.True(strategy.CanHandle(new ProductSkuInput(
+            WarehouseType.OwnWarehouse, "WH01", "ELEC", null, "SKU-00001")));
+        Assert.False(strategy.CanHandle(new ProductSkuInput(
+            WarehouseType.ThirdParty, "WH01", "ELEC", null, "SKU-00001")));
+        Assert.False(strategy.CanHandle(new ProductSkuInput(
+            WarehouseType.OwnWarehouse, "WH01", "ELEC", null, null)));
     }
 }
 ```

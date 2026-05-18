@@ -54,7 +54,7 @@ PR レビューで「**14 章分の主張を 1 ページで思い出す**」た�
 
 - [ ] **過剰適用していないか**: 戦略が 1 つしかないのに Strategy 化していないか?(第 8 章, YAGNI)
 - [ ] **Selector に if がない**: `strategies.First(s => s.CanHandle(input))` のように Strategy 自身が適用可否を判断しているか?(第 8 章)
-- [ ] **業務概念が型として現れる**: `"PRIMARY"` 文字列比較ではなく `Region.Primary` 型を使っているか?(第 8 章)
+- [ ] **業務概念が型として現れる**: `"OWN"` 文字列比較ではなく `WarehouseType.OwnWarehouse` 型を使っているか?(第 8 章)
 
 ---
 
