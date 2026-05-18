@@ -1,0 +1,39 @@
+title: "if の住所を決める本 — Clean Architecture × DDD でロジックの居場所を見極める設計術"
+summary: |
+  「機能追加するたびに if が増える」 — その if は悪ではなく、住所を間違えているだけ。
+  EC サイトの Order Aggregate を題材に、Clean Architecture と DDD を 14 章で実装に落とし込みます。
+
+  対象: 「Clean Architecture や DDD は聞いたことあるけど深くはない」中級手前のエンジニア。
+  特徴: Mermaid 51 図 / 脚注 67 件 / 外部リンク 76 種(Fowler, Evans, Vernon, Martin 等の原典直結) / 章末演習 42 問 + 全問解答。
+  題材は C# (.NET 8 / EF Core) と TypeScript (React + Zod) の両方をカバー。
+
+topics: ["architecture", "ddd", "cleanarchitecture", "csharp", "typescript"]
+
+# false = 下書き(Zenn に push しても公開されない)
+# 公開準備が整ったら true に変更してください
+published: false
+
+# 0 = 無料、有料にする場合は 200-5000
+price: 0
+
+# 章順序(ファイル名から拡張子を除いたもの)
+chapters:
+  - 00-preface
+  - 01-why-if-grows
+  - 02-clean-architecture
+  - 03-ddd-minimum
+  - 04-rich-vs-anemic
+  - 05-judgment-table
+  - 06-entity-state-transition
+  - 07-value-object
+  - 08-domain-service-strategy
+  - 09-aggregate-boundary
+  - 10-handler-decomposition
+  - 11-repository-design
+  - 12-frontend-application
+  - 13-test-strategy
+  - 14-legacy-migration
+  - appendix-a-glossary
+  - appendix-b-checklist
+  - appendix-c-exercises
+  - references
