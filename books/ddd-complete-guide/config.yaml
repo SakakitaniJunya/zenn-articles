@@ -1,0 +1,44 @@
+title: "DDDを完全に理解しよう — 曖昧なままで今の自分の技術力を上げることはできない"
+summary: |
+  「Entity と Value Object は分かった気がする。でも、どこに境界を引けばいいか分からない」
+  そのモヤモヤを、今夜終わらせます。
+
+  Eric Evans の Blue Book（2003）から Vaughn Vernon の Implementing DDD（2013）、
+  Alberto Brandolini の Event Storming、Greg Young の CQRS / Event Sourcing まで、
+  DDD の全思想を一冊に凝縮しました。
+
+  C# サンプルコード + Mermaid クラス図 51 枚で、
+  戦略的設計（Bounded Context / Context Map / Event Storming）から
+  戦術的設計（Entity / Value Object / Aggregate / Repository / Domain Events）、
+  アーキテクチャ（ヘキサゴナル / CQRS / Event Sourcing）、
+  実践（テスト戦略 / リファクタリング / マイクロサービス / アンチパターン）まで完走します。
+
+  対応リポジトリ: https://github.com/SakakitaniJunya/ddd-csharp-sample
+
+topics: ["ddd", "csharp", "architecture", "designpattern", "dotnet"]
+published: false
+price: 0
+
+chapters:
+  - 00-preface
+  - 01-why-ddd
+  - 02-ubiquitous-language
+  - 03-domain-classification
+  - 04-bounded-context
+  - 05-context-map
+  - 06-event-storming
+  - 07-value-objects
+  - 08-entities
+  - 09-aggregates
+  - 10-domain-events
+  - 11-repositories
+  - 12-services
+  - 13-factories
+  - 14-architecture
+  - 15-cqrs
+  - 16-event-sourcing
+  - 17-testing
+  - 18-refactoring
+  - 19-microservices
+  - 20-antipatterns
+  - 21-class-diagrams
