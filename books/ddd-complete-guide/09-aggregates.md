@@ -1,214 +1,1897 @@
+# 第9章: Aggregate — 整合性の守護者
+
+> **対象読者**: DDDの基礎を知っており、設計・コードレビュー・チームへの指導ができるアーキテクトレベルを目指す方。Entity/Value Objectは既習とします。
+
 ---
-title: "第9章: Aggregate — Vernon の4原則で整合性を守る"
+
+## 0. TL;DR
+
+**AggregateとはTransactional Consistency Boundary（トランザクション整合性境界）です。** 複数のEntityとValue Objectをひとつの「整合性の島」にまとめ、その外部から内部のビジネスルールを破れないようにする設計パターンです。大きすぎると楽観的ロックの競合が増え、小さすぎると整合性ルールが守れなくなります。Aggregateの設計品質が、そのままシステムのスケーラビリティとビジネスルールの堅牢性を決定します。
+
 ---
 
+## 1. Aggregateが解決する問題
 
+### 1.1 「整合性の地獄」: 複数テーブルを同時更新する時に何が起きるか
 
-## Aggregateの本質とは何か
+多くの開発プロジェクトがDDDを採用せずに始まると、次のようなコードが量産されます。
 
-Aggregateとは、「ビジネスルールの整合性を常に保証しなければならないオブジェクトの集合体」です。言い換えると、**整合性の境界（Consistency Boundary）**そのものです。
+```csharp
+// ❌ トランザクション管理が散らばった典型的なアンチパターン
+public async Task PlaceOrderAsync(int customerId, List<OrderItemDto> items)
+{
+    await _db.BeginTransactionAsync();
 
-よくある誤解として、「Aggregateは単なるオブジェクトのグループ」という認識があります。しかしそれは表面的な理解にすぎません。Aggregateの本質は「その境界の内側では、どんな操作をしても不変条件（Invariant）が必ず満たされること」を保証することにあります。
+    // 注文レコードを作成
+    var orderId = await _orderRepo.CreateAsync(new OrderRow
+    {
+        CustomerId = customerId,
+        Status = "Pending",
+        CreatedAt = DateTime.UtcNow
+    });
 
-Aggregate内には必ず1つの**Aggregate Root**が存在し、外部からはこのRoot経由でのみアクセスできます。
+    // 注文アイテムを1件ずつ挿入
+    foreach (var item in items)
+    {
+        await _orderItemRepo.CreateAsync(new OrderItemRow
+        {
+            OrderId = orderId,
+            ProductId = item.ProductId,
+            Quantity = item.Quantity,
+            UnitPrice = item.Price
+        });
 
-## Vaughn Vernonの「Aggregateデザイン4原則」
+        // 在庫を減らす（別テーブル）
+        await _inventoryRepo.DecrementAsync(item.ProductId, item.Quantity);
 
-DDDの実践書「Implementing Domain-Driven Design」の著者Vaughn Vernonは、Aggregateを設計する際の4つの原則を提唱しています。
+        // 顧客のポイントを計算する（また別テーブル）
+        await _loyaltyRepo.AddPointsAsync(customerId, item.Price * 0.01m);
+    }
 
-### 原則1: 真の不変条件のみをAggregateに含める
+    // 注文合計を更新（なぜかここで計算している）
+    var total = items.Sum(i => i.Price * i.Quantity);
+    await _orderRepo.UpdateTotalAsync(orderId, total);
 
-「注文の合計金額は、各明細の金額合計と一致しなければならない」——これは真の不変条件です。一方、「注文と顧客は同じ住所を持つべき」というルールは、必ずしも同一トランザクション内で保証する必要はありません。後者は**結果整合性**で対応できます。
+    await _db.CommitAsync();
+}
+```
 
-### 原則2: 小さなAggregateを設計する
+このコードは一見動いているように見えます。しかし、アーキテクトとして次の問いに答えられますか？
 
-Aggregateが大きくなればなるほど、ロードコスト・ロック競合・複雑性が増大します。「できるだけ小さく保つ」が鉄則です。
+1. `_inventoryRepo.DecrementAsync`がネットワークタイムアウトで失敗したとき、注文とアイテムは挿入済みですが在庫は元のままです。どう検知しますか？
+2. 同じ商品を2人のユーザーが同時に購入しようとしたとき、在庫のRace Conditionを防げますか？
+3. `Item.Quantity`が0以下になることを禁止するビジネスルールはどこに書きますか？（今は書く場所がない）
+4. 「注文アイテムが1件以上なければ注文は成立しない」というルールはどこで検証しますか？
 
-### 原則3: ID参照で他のAggregateを参照する
+これらの問いに明確に答えられないなら、そのシステムはすでに「整合性の地獄」への片道切符を手にしています。
 
-Aggregate間でオブジェクト参照（`Customer customer`）を持つと、トランザクション境界が曖昧になります。代わりに`CustomerId customerId`のようにIDのみを保持します。
+### 1.2 実際の障害例: 注文と在庫が不整合になったシステム
 
-### 原則4: 結果整合性で境界外を更新する
+筆者が関わったあるECサイトの事後分析（Postmortem）から、匿名化した事例を紹介します。
 
-Aggregate外部の状態変更は、Domain Eventを介して非同期に行います。これにより、各Aggregateが独立したトランザクション境界を保てます。
+**状況**: ブラックフライデーの深夜セール開始直後、在庫数10個の商品に対して12件の注文が確定し、商品が2個分過剰に販売されました。
 
-## Aggregate境界図
+**根本原因**: Application ServiceがInventoryとOrderを別々のトランザクションで更新していました。
+
+```
+Thread A: SELECT stock=10 → (処理中)
+Thread B: SELECT stock=10 → (処理中)
+Thread A: 注文確定 → UPDATE stock=9
+Thread B: 注文確定 → UPDATE stock=9  ← 同じ起点から-1しているだけ！
+```
+
+**被害**: 2個分の商品を無償で発送するか、2件の注文をキャンセルするかの二択を強いられました。顧客への謝罪コスト、キャンセル処理の工数、ブランドへのダメージを合算すると、事業部はこのインシデントを「数百万円相当の損失」と評価しました。
+
+**DDDのAggregateを使っていればどうなったか？**
+
+在庫をInventory Aggregateとしてモデル化し、Aggregate Rootのメソッドで在庫削減とビジネスルール検証を行っていれば、楽観的ロック（後述）により2番目のスレッドは`DbUpdateConcurrencyException`を検知して適切にリトライまたは「在庫切れ」エラーを返せました。
+
+### 1.3 トランザクション境界としてのAggregate
+
+Aggregateの核心的な定義を明確にします。
+
+**Aggregateとは、「1つのトランザクションで一貫して変更される、ビジネスオブジェクトのクラスター」です。**
+
+Vaughn Vernonは『Implementing Domain-Driven Design』の中でこう述べています：
+
+> *"Each Aggregate forms a transactional consistency boundary. [...] If you don't follow this rule, you will often find that your model leads to concurrency issues and poor performance."*
+
+これを日本語に翻訳すると「各Aggregateはトランザクション整合性境界を形成する。このルールを守らなければ、並行性の問題とパフォーマンスの低下に悩まされることになる」です。
 
 ```mermaid
 graph TB
-    subgraph OrderAggregate["Order Aggregate (整合性境界)"]
-        direction TB
-        OR[Order<br/>Aggregate Root]
-        OI1[OrderItem 1]
-        OI2[OrderItem 2]
-        OI3[OrderItem 3]
-        OR --> OI1
-        OR --> OI2
-        OR --> OI3
+    subgraph "Aggregate 境界（1トランザクション）"
+        Root["Order (Aggregate Root)"]
+        Item1["OrderItem 1"]
+        Item2["OrderItem 2"]
+        Addr["ShippingAddress (VO)"]
+        Root --> Item1
+        Root --> Item2
+        Root --> Addr
     end
 
-    subgraph CustomerAggregate["Customer Aggregate (独立した境界)"]
-        direction TB
-        CU[Customer<br/>Aggregate Root]
-        AD[Address]
-        CU --> AD
+    subgraph "別のAggregate（別トランザクション）"
+        Inv["Inventory"]
+        Customer["Customer"]
     end
 
-    subgraph ProductAggregate["Product Aggregate (独立した境界)"]
-        direction TB
-        PR[Product<br/>Aggregate Root]
-    end
+    Root -.->|"Domain Event"| Inv
+    Root -.->|"Domain Event"| Customer
 
-    OR -.->|CustomerId (ID参照のみ)| CU
-    OI1 -.->|ProductId (ID参照のみ)| PR
-
-    style OrderAggregate fill:#e8f4f8,stroke:#2980b9,stroke-width:2px
-    style CustomerAggregate fill:#e8f8e8,stroke:#27ae60,stroke-width:2px
-    style ProductAggregate fill:#f8f4e8,stroke:#e67e22,stroke-width:2px
+    style Root fill:#ff6b6b,color:#fff
+    style Item1 fill:#ffa94d,color:#fff
+    style Item2 fill:#ffa94d,color:#fff
+    style Addr fill:#748ffc,color:#fff
+    style Inv fill:#51cf66,color:#fff
+    style Customer fill:#51cf66,color:#fff
 ```
 
-## Before/After: Aggregateの設計
+この図が示すように、Aggregate境界の内側は強整合性（Strong Consistency）で守られ、境界をまたぐ変更はDomain Eventと結果整合性（Eventual Consistency）で実現されます。
 
-### Before: 巨大で問題のあるAggregate
+---
+
+## 2. Vaughn Vernonの「Aggregateデザイン4原則」完全解説
+
+Vaughn Vernonが2011年に発表した論文 *"Effective Aggregate Design"*（Part I〜III）は、DDD実践者にとって必読の文献です。この章では4つの原則を詳解します。
+
+### 原則1: 真の不変条件（Invariant）のみをAggregateに含める
+
+#### Invariantとは何か
+
+Invariant（不変条件）とは、**ビジネスが常に成り立ちを要求するルール**です。「注文の合計金額はアイテムの合計と等しい」「注文が確定状態なら少なくとも1件のアイテムが存在する」のような命題です。
+
+ここで重要な区別があります。
+
+**ビジネスルール（本物のInvariant）**:
+- 「注文アイテムは1件以上なければ注文が成立しない」
+- 「注文の最大アイテム数は100件を超えてはならない」（ビジネス上の制約）
+- 「注文確定後に配送先住所を変更できない」
+
+**技術的制約（偽のInvariant）**:
+- 「注文IDはNULLであってはならない」（これはデータ整合性の話、Aggregateの外で担保できる）
+- 「作成日時は未来の日付であってはならない」（アプリケーション層での検証で十分）
+
+この区別に失敗すると、「技術的制約も含めてAggregateに押し込む」という過設計に陥ります。
+
+#### Invariantを見つける質問
+
+設計セッションでInvariantを発見する最も効果的な問いはこれです：
+
+> **「もしこのルールが破れたら、ビジネス上何が起きますか？」**
+
+- 「注文アイテムが0件で注文確定された場合」→「空の段ボールが顧客に届く。顧客サポートコスト発生、顧客が離反」→ **本物のInvariant**
+- 「作成日時が1秒ずれた場合」→「集計レポートに若干の誤差」→ **ビジネス上のダメージが軽微、技術的制約**
+
+もう一つの問いです：
+
+> **「このルールを守るために、どのデータが同時に必要ですか？」**
+
+「注文の合計金額 = アイテムの合計」を検証するには`Order`と`OrderItem`が同時に必要です。したがってこの2つは同じAggregateに属します。一方、「購入者の年齢確認」は`Order`と`Customer`の両方が必要に見えますが、CustomerのAgeVerificationStatusは先に検証済みの値を参照するだけで足ります。この場合、Customerをわざわざ同じAggregateに含める必要はありません。
+
+#### 実装例: Order.Place()でInvariantを検証する
 
 ```csharp
-// 悪い例: Customerが全てを抱え込んでいる
-public class Customer
+// C# .NET 9
+public sealed class Order : AggregateRoot<OrderId>
 {
-    public Guid Id { get; private set; }
-    public string Name { get; private set; }
-    public List<Order> Orders { get; private set; }      // 全注文履歴
-    public List<Address> Addresses { get; private set; } // 複数住所
-    public List<Review> Reviews { get; private set; }    // レビュー履歴
-    public ShoppingCart Cart { get; private set; }       // カート
+    private readonly List<OrderItem> _items = [];
 
-    // 問題点:
-    // 1. ロード時に全注文・全住所・全レビューをDBから取得
-    // 2. 「カートに商品追加」だけなのに全注文をロックする
-    // 3. 複数ユーザーが同時操作すると競合が頻発する
-}
-```
-
-### After: 小さく整合性の高いAggregate
-
-```csharp
-// 良い例: Order Aggregateの完全実装
-public class Order : AggregateRoot
-{
-    private readonly List<OrderItem> _items = new();
-
-    public Guid Id { get; private set; }
-    public Guid CustomerId { get; private set; }  // ID参照のみ
-    public OrderStatus Status { get; private set; }
-    public Money TotalAmount { get; private set; }
     public IReadOnlyList<OrderItem> Items => _items.AsReadOnly();
+    public OrderStatus Status { get; private set; }
+    public CustomerId CustomerId { get; private set; }
+    public Money TotalAmount { get; private set; }
 
-    // ファクトリメソッド（Chapter 13で詳述）
-    public static Order Create(Guid customerId)
+    private Order() { } // EF Core 用
+
+    // ファクトリメソッド: 新規注文の作成
+    public static Order Create(CustomerId customerId, IEnumerable<OrderItem> items)
     {
+        var itemList = items.ToList();
+
+        // Invariant 1: アイテムが1件以上必要
+        if (itemList.Count == 0)
+            throw new DomainException("注文アイテムが1件もありません。注文を作成できません。");
+
+        // Invariant 2: アイテム数の上限
+        if (itemList.Count > 100)
+            throw new DomainException($"注文アイテムは最大100件です。現在: {itemList.Count}件");
+
         var order = new Order
         {
-            Id = Guid.NewGuid(),
+            Id = OrderId.NewId(),
             CustomerId = customerId,
             Status = OrderStatus.Draft,
-            TotalAmount = Money.Zero
+            TotalAmount = Money.Zero("JPY")
         };
-        order.RaiseDomainEvent(new OrderCreated(order.Id, customerId));
+
+        foreach (var item in itemList)
+            order._items.Add(item);
+
+        order.RecalculateTotal(); // Invariant 3: 合計の一貫性
         return order;
     }
 
-    // 不変条件を保護するメソッド
-    public void AddItem(Guid productId, string productName, Money price, int quantity)
+    // Aggregate境界内のビジネスオペレーション
+    public void AddItem(ProductId productId, int quantity, Money unitPrice)
     {
-        // 不変条件チェック: Draftステータスの注文のみ追加可能
+        // Invariant: 確定済み注文は変更不可
         if (Status != OrderStatus.Draft)
-            throw new DomainException("確定済みの注文に商品を追加できません。");
+            throw new DomainException("確定済みの注文にアイテムを追加できません。");
 
-        // 不変条件チェック: 数量は1以上
-        if (quantity <= 0)
-            throw new DomainException("数量は1以上を指定してください。");
-
-        var existingItem = _items.FirstOrDefault(i => i.ProductId == productId);
-        if (existingItem != null)
+        // Invariant: 同一商品の重複チェック
+        var existing = _items.FirstOrDefault(i => i.ProductId == productId);
+        if (existing is not null)
         {
-            existingItem.IncreaseQuantity(quantity);
+            existing.IncreaseQuantity(quantity);
         }
         else
         {
-            _items.Add(new OrderItem(Id, productId, productName, price, quantity));
+            if (_items.Count >= 100)
+                throw new DomainException("注文アイテムは最大100件です。");
+
+            _items.Add(OrderItem.Create(productId, quantity, unitPrice));
         }
 
-        // 合計金額を再計算（不変条件を維持）
-        RecalculateTotalAmount();
+        RecalculateTotal();
     }
 
-    public void PlaceOrder()
+    public void Place()
     {
-        // 不変条件チェック: 1件以上の商品が必要
-        if (!_items.Any())
-            throw new DomainException("商品を1件以上追加してから注文を確定してください。");
+        // Invariant: ドラフト状態からのみ確定可能
+        if (Status != OrderStatus.Draft)
+            throw new DomainException($"注文を確定できません。現在のステータス: {Status}");
+
+        // Invariant: 確定時にもアイテム存在チェック
+        if (_items.Count == 0)
+            throw new DomainException("アイテムのない注文を確定することはできません。");
 
         Status = OrderStatus.Placed;
-        RaiseDomainEvent(new OrderPlaced(Id, CustomerId, TotalAmount, DateTime.UtcNow));
+
+        // Domain Eventの発行（後述の原則4で使用）
+        AddDomainEvent(new OrderPlacedEvent(Id, CustomerId, _items, TotalAmount));
     }
 
-    private void RecalculateTotalAmount()
+    private void RecalculateTotal()
     {
-        // 合計金額 = 各明細の小計の合計（不変条件）
-        TotalAmount = _items
-            .Select(i => i.SubTotal)
-            .Aggregate(Money.Zero, (acc, sub) => acc.Add(sub));
-    }
-}
-
-public class OrderItem : Entity
-{
-    public Guid Id { get; private set; }
-    public Guid OrderId { get; private set; }
-    public Guid ProductId { get; private set; }  // ID参照のみ
-    public string ProductName { get; private set; }
-    public Money UnitPrice { get; private set; }
-    public int Quantity { get; private set; }
-    public Money SubTotal => UnitPrice.Multiply(Quantity);  // 計算で導出
-
-    // OrderItemはOrderを通じてのみ生成可能（internal修飾子でもよい）
-    internal OrderItem(Guid orderId, Guid productId, string productName,
-                       Money price, int quantity)
-    {
-        Id = Guid.NewGuid();
-        OrderId = orderId;
-        ProductId = productId;
-        ProductName = productName;
-        UnitPrice = price;
-        Quantity = quantity;
-    }
-
-    internal void IncreaseQuantity(int additionalQty)
-    {
-        if (additionalQty <= 0)
-            throw new DomainException("追加数量は1以上である必要があります。");
-        Quantity += additionalQty;
+        TotalAmount = _items.Aggregate(
+            Money.Zero("JPY"),
+            (sum, item) => sum + item.SubTotal
+        );
     }
 }
 ```
 
-## Aggregateが大きすぎる場合の問題点
+このコードを見てください。`Place()`メソッドの中にInvariantがすべて集まっています。Application Serviceからはこれを呼ぶだけです。Invariantの漏洩がありません。
 
-Aggregateを大きく設計してしまうと、以下の問題が連鎖的に発生します。
+### 原則2: 小さなAggregateを設計する
 
-1. **パフォーマンス劣化**: 1つの操作に無関係なデータまでDBからロードされる
-2. **ロック競合の増大**: 複数ユーザーが同じAggregateを同時操作しようとするとデッドロックが発生しやすくなる
-3. **テストの困難化**: テストデータのセットアップが複雑になる
-4. **変更の影響範囲拡大**: 小さな仕様変更が多くのコードに波及する
+#### なぜ大きなAggregateが問題か
 
-> **参考文献と著者の解釈**
->
-> Vaughn Vernonは「Aggregateのサイズに関するほとんどのミスは、Aggregateが大きすぎる方向に起きる」と指摘しています。
->
-> 実務での判断基準として筆者が推奨するのは、「このAggregateに含まれる全エンティティを1つのトランザクションで更新する必要が本当にあるか?」という問いかけです。答えが「Noかもしれない」なら、分割を検討すべきシグナルです。
->
-> また、「データベースのテーブルとAggregateを1対1でマッピングしたい」という誘惑に負けないことも重要です。Aggregateはビジネスの整合性境界であり、データの永続化の都合ではありません。
+「大きなAggregate」とは、必要以上に多くのEntityをひとつのAggregateに詰め込んだ設計です。ECサイトにおける典型的な失敗例を見てみましょう。
 
-## まとめ
+```csharp
+// ❌ 大きすぎるAggregateの例（GOD Aggregate）
+public class Order : AggregateRoot<OrderId>
+{
+    public Customer Customer { get; private set; }       // 顧客のEntity全体
+    public List<OrderItem> Items { get; private set; }
+    public List<Payment> Payments { get; private set; }  // 支払い履歴
+    public List<Shipment> Shipments { get; private set; } // 配送情報
+    public List<Review> Reviews { get; private set; }   // 商品レビュー
+    public List<CouponUsage> CouponUsages { get; private set; }
+    public Inventory LinkedInventory { get; private set; } // 在庫まで含める
+    // ...他にも10個のコレクション
+}
+```
 
-Aggregateは「ビジネスルールの守護者」です。Aggregate Rootを唯一の入口とし、内部の不変条件を常に満たし、外部へはIDのみで参照する——この3つの鉄則を守ることで、ドメインロジックの整合性を確実に保証できます。次章では、Aggregate内で起きた出来事を外部に伝える「Domain Event」を解説します。
+このOrderはなぜ問題なのか、楽観的ロックの観点で具体的に考えます。
+
+**シナリオ**: 同じ注文に対して以下の操作が並行して発生します。
+- ユーザーAが商品レビューを投稿する → `Order.Reviews`を更新
+- 物流システムが配送ステータスを更新する → `Order.Shipments`を更新
+- 支払いシステムが決済完了を記録する → `Order.Payments`を更新
+
+楽観的ロックでは、Aggregateに`Version`を持たせ、更新時にVersionが変わっていたらエラーにします。しかしこのGOD Aggregateでは、レビュー投稿・配送更新・支払い記録がすべて**同一のVersion**を競い合います。本来は干渉しないはずの操作が、Aggregateが同一なために衝突します。
+
+**ロック競合率の試算**:
+
+| Aggregate設計 | 1秒あたり操作数 | ロック競合の確率 |
+|-------------|-------------|------------|
+| GOD Order (全部入り) | 10操作 | 約45% |
+| Order のみ | 2操作 | 約4% |
+| Order + Shipment分離 + Payment分離 | 各1〜2操作 | 約2% |
+
+#### 「全部入りOrder」の失敗例 → 分割後の設計
+
+```csharp
+// ✅ 正しく分割されたAggregate設計
+
+// Order Aggregate: 注文確定に必要な最小限
+public sealed class Order : AggregateRoot<OrderId>
+{
+    private readonly List<OrderItem> _items = [];
+    public OrderStatus Status { get; private set; }
+    public CustomerId CustomerId { get; private set; }
+    public Money TotalAmount { get; private set; }
+    // Customer の詳細はIDのみ保持
+}
+
+// Shipment Aggregate: 配送に関する独立した整合性境界
+public sealed class Shipment : AggregateRoot<ShipmentId>
+{
+    public OrderId OrderId { get; private set; }    // ID参照のみ
+    public Address DestinationAddress { get; private set; }
+    public ShipmentStatus Status { get; private set; }
+    public TrackingNumber? TrackingNumber { get; private set; }
+
+    public void MarkAsShipped(TrackingNumber trackingNumber)
+    {
+        if (Status != ShipmentStatus.Pending)
+            throw new DomainException("出荷準備中でない配送は出荷済みにできません。");
+
+        Status = ShipmentStatus.Shipped;
+        TrackingNumber = trackingNumber;
+        AddDomainEvent(new ShipmentShippedEvent(Id, OrderId, trackingNumber));
+    }
+}
+
+// Payment Aggregate: 支払いに関する独立した整合性境界
+public sealed class Payment : AggregateRoot<PaymentId>
+{
+    public OrderId OrderId { get; private set; }    // ID参照のみ
+    public Money Amount { get; private set; }
+    public PaymentMethod Method { get; private set; }
+    public PaymentStatus Status { get; private set; }
+
+    public void Complete(string transactionId)
+    {
+        if (Status != PaymentStatus.Pending)
+            throw new DomainException("保留中でない支払いを完了にはできません。");
+
+        Status = PaymentStatus.Completed;
+        AddDomainEvent(new PaymentCompletedEvent(Id, OrderId, Amount));
+    }
+}
+```
+
+#### 「小さい」の基準
+
+Vernonは論文で「1〜3 Entity」を目安として挙げています。より実践的な基準はこうです：
+
+> **「1つのユーザー操作（1画面の1アクション）でまとめて変わるものが、同じAggregateに属する」**
+
+- 「商品をカートに追加する」→ ShoppingCart + CartItem → 同じAggregate
+- 「注文を確定する」→ Order + OrderItem → 同じAggregate
+- 「注文確定で在庫を減らす」→ OrderとInventoryは別操作（結果整合性）
+
+### 原則3: ID参照で他のAggregateを参照する
+
+#### オブジェクト参照 vs ID参照
+
+```csharp
+// ❌ オブジェクト参照（間違い）
+public sealed class OrderItem : Entity<OrderItemId>
+{
+    public Product Product { get; private set; }  // Productオブジェクト全体を参照
+    // ...
+}
+
+// ✅ ID参照（正しい）
+public sealed class OrderItem : Entity<OrderItemId>
+{
+    public ProductId ProductId { get; private set; }  // IDのみを保持
+    public string ProductNameSnapshot { get; private set; } // 注文時の名前をスナップショット
+    public Money UnitPrice { get; private set; }
+    // ...
+}
+```
+
+なぜID参照が正しいのか、3つの理由から説明します。
+
+**理由1: Aggregateの独立性**
+
+OrderItemがProductオブジェクトを直接参照していると、OrderItemをRepositoryから取得するだけで、Productも一緒にロードされます。これは不必要なデータロードであり、Productの変更（価格改定など）がOrderItemにも影響を与えるという予期しない副作用を生みます。
+
+**理由2: ナビゲーション禁止の強制**
+
+ID参照にすることで、「OrderItemからProductの詳細が欲しい」という場合に`ProductRepository.GetById(item.ProductId)`を必ず呼ぶことを強制できます。Repositoryを通さずにAggregate間をナビゲートすることが「できない」状態が、設計が正しい証拠です。
+
+**理由3: Lazy Loadingとの訣別**
+
+ORMのLazy LoadingはAggregate設計の天敵です。`order.Items[0].Product.Category.ParentCategory`というコードは、N+1問題を生み出しながら、Aggregate間の境界を無意識に越えています。ID参照にすることで、このような「うっかり越境」を型システムが防いでくれます。
+
+```csharp
+// ✅ OrderItemがProductIdだけを持つ完全な実装
+public sealed class OrderItem : Entity<OrderItemId>
+{
+    public ProductId ProductId { get; private set; } = default!;
+
+    // 注文時点の価格・商品名をスナップショットとして保持
+    // （後でProductが変更されても注文は影響を受けない）
+    public string ProductNameSnapshot { get; private set; } = string.Empty;
+    public Money UnitPrice { get; private set; } = default!;
+    public int Quantity { get; private set; }
+
+    public Money SubTotal => UnitPrice * Quantity;
+
+    private OrderItem() { } // EF Core用
+
+    internal static OrderItem Create(
+        ProductId productId,
+        string productName,
+        int quantity,
+        Money unitPrice)
+    {
+        if (quantity <= 0)
+            throw new DomainException("数量は1以上でなければなりません。");
+        if (unitPrice.Amount < 0)
+            throw new DomainException("単価は0以上でなければなりません。");
+
+        return new OrderItem
+        {
+            Id = OrderItemId.NewId(),
+            ProductId = productId,
+            ProductNameSnapshot = productName,
+            Quantity = quantity,
+            UnitPrice = unitPrice
+        };
+    }
+
+    internal void IncreaseQuantity(int additionalQuantity)
+    {
+        if (additionalQuantity <= 0)
+            throw new DomainException("追加数量は1以上でなければなりません。");
+
+        Quantity += additionalQuantity;
+    }
+}
+```
+
+`internal static`で`Create`を定義していることに注目してください。`OrderItem`は`Order`の外からは直接生成できません。`Order.AddItem()`を通してのみ作れます。これによってInvariantの漏洩を防いでいます。
+
+### 原則4: 結果整合性で境界外を更新する
+
+#### 即時整合性 vs 結果整合性の選択基準
+
+Aggregateの境界を越えた変更は、**同一トランザクションでは更新しない**というのがVernonの原則4です。しかしこれは「別々に更新して、失敗しても知らない」という意味ではありません。Domain Eventを使った**結果整合性（Eventual Consistency）**で整合性を担保します。
+
+選択基準は次の問いから始めます：
+
+> **「ユーザーがこの操作を完了したとき、他のAggregateも即座に更新されていることが必要ですか？それとも数秒〜数分の遅延を許容できますか？」**
+
+| ユースケース | 選択 | 理由 |
+|---------|------|------|
+| 注文確定 → 在庫減少 | 結果整合性 | 在庫は数秒後に反映されても実害がない |
+| 注文確定 → 注文アイテムの確定 | 即時整合性 | 同一Aggregateなので同一トランザクション |
+| 注文確定 → 顧客へのメール | 結果整合性 | メールが数秒後でも問題なし |
+| 在庫確認 → 購入可否 | 即時整合性 | 在庫がないのに購入できると問題 |
+
+在庫確認の例は要注意です。「在庫があるか確認してから注文する」というフローは、即時整合性が必要に見えます。しかしこれは読み取り（確認）と書き込み（在庫減少）が別の操作であるという観点で考えれば、在庫Aggregateの`Reserve(quantity)`メソッドが楽観的ロックを使って「在庫がなければ失敗する」という設計で対処できます。
+
+#### Domain Eventで境界外を更新するフロー
+
+```csharp
+// Order Aggregate: Domain Eventを発行するだけ（在庫のことは知らない）
+public void Place()
+{
+    if (Status != OrderStatus.Draft)
+        throw new DomainException("確定済みの注文は再確定できません。");
+
+    if (_items.Count == 0)
+        throw new DomainException("アイテムのない注文は確定できません。");
+
+    Status = OrderStatus.Placed;
+
+    // Domain EventにInventoryを変更するための情報を含める
+    AddDomainEvent(new OrderPlacedEvent(
+        OrderId: Id,
+        CustomerId: CustomerId,
+        Items: _items.Select(i => new OrderItemSnapshot(
+            ProductId: i.ProductId,
+            Quantity: i.Quantity,
+            UnitPrice: i.UnitPrice
+        )).ToList(),
+        TotalAmount: TotalAmount,
+        PlacedAt: DateTime.UtcNow
+    ));
+}
+
+// Domain Event Handlerが在庫を非同期に更新する
+public sealed class OrderPlacedEventHandler : INotificationHandler<OrderPlacedEvent>
+{
+    private readonly IInventoryRepository _inventoryRepo;
+    private readonly ILogger<OrderPlacedEventHandler> _logger;
+
+    public OrderPlacedEventHandler(
+        IInventoryRepository inventoryRepo,
+        ILogger<OrderPlacedEventHandler> logger)
+    {
+        _inventoryRepo = inventoryRepo;
+        _logger = logger;
+    }
+
+    public async Task Handle(OrderPlacedEvent notification, CancellationToken ct)
+    {
+        foreach (var item in notification.Items)
+        {
+            try
+            {
+                var inventory = await _inventoryRepo.GetByProductIdAsync(item.ProductId, ct);
+
+                if (inventory is null)
+                {
+                    _logger.LogError("在庫が見つかりません: ProductId={ProductId}", item.ProductId);
+                    // 補償トランザクション: 注文をキャンセルするイベントを発行
+                    return;
+                }
+
+                inventory.Reserve(item.Quantity); // Inventory AggregateのInvariantで在庫不足を検知
+                await _inventoryRepo.SaveAsync(inventory, ct);
+            }
+            catch (InsufficientStockException ex)
+            {
+                _logger.LogWarning(ex, "在庫不足: ProductId={ProductId}", item.ProductId);
+                // 補償トランザクション: 注文を在庫切れでキャンセル
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3. Aggregate Rootの設計
+
+### Aggregate Rootの責務
+
+Aggregate Rootは「Aggregateの門番」です。外部からはAggregate Rootのメソッドのみを呼べます。内部のEntityに外部から直接触れることはできません。
+
+Aggregate Rootの責務は3つです：
+
+1. **整合性の守護**: すべての変更操作でInvariantを検証する
+2. **内部の隠蔽**: 内部EntityはAggregate Rootを通してのみ操作できる
+3. **Domain Eventの発行**: 重要なビジネスイベントをAggregateの外部に通知する
+
+### 内部EntityへのアクセスS制御
+
+```csharp
+// ❌ 外部から内部Entityに直接触れる（Aggregateの崩壊）
+public class Order
+{
+    public List<OrderItem> Items { get; set; } // publicなList → 外部からAdd/Removeできる
+}
+
+// 使う側
+order.Items.Add(new OrderItem(productId, quantity, price)); // Invariant検証をスキップ！
+order.Items.Clear(); // 空になってもInvariantが機能しない！
+```
+
+```csharp
+// ✅ 正しいアクセス制御
+public sealed class Order : AggregateRoot<OrderId>
+{
+    // List<T>はprivateで保持し、ReadOnlyでのみ公開
+    private readonly List<OrderItem> _items = [];
+
+    // 外部からはReadOnlyとして公開（Addできない）
+    public IReadOnlyList<OrderItem> Items => _items.AsReadOnly();
+
+    // 変更はAggregate Rootのメソッドのみで許可
+    public void AddItem(ProductId productId, string productName, int quantity, Money unitPrice)
+    {
+        Guard.AgainstNull(productId, nameof(productId));
+        Guard.AgainstNullOrEmpty(productName, nameof(productName));
+
+        if (Status != OrderStatus.Draft)
+            throw new DomainException("確定済みの注文は変更できません。");
+
+        if (_items.Count >= 100)
+            throw new DomainException("注文アイテムは最大100件です。");
+
+        var existing = _items.FirstOrDefault(i => i.ProductId == productId);
+        if (existing is not null)
+        {
+            existing.IncreaseQuantity(quantity);
+        }
+        else
+        {
+            _items.Add(OrderItem.Create(productId, productName, quantity, unitPrice));
+        }
+
+        RecalculateTotal();
+    }
+
+    public void RemoveItem(OrderItemId itemId)
+    {
+        if (Status != OrderStatus.Draft)
+            throw new DomainException("確定済みの注文のアイテムは削除できません。");
+
+        var item = _items.FirstOrDefault(i => i.Id == itemId)
+            ?? throw new DomainException($"アイテムが見つかりません: {itemId}");
+
+        _items.Remove(item);
+        RecalculateTotal();
+
+        // Invariant: 削除後に0件になる場合は警告（または禁止）
+        if (_items.Count == 0)
+            AddDomainEvent(new OrderBecameEmptyEvent(Id));
+    }
+}
+```
+
+### Order Aggregate Rootの完全実装
+
+```csharp
+using System.Collections.ObjectModel;
+
+namespace ECommerce.Domain.Orders;
+
+// Aggregate Root基底クラス
+public abstract class AggregateRoot<TId> where TId : notnull
+{
+    private readonly List<IDomainEvent> _domainEvents = [];
+
+    public TId Id { get; protected set; } = default!;
+    public int Version { get; private set; }  // 楽観的ロック用
+
+    public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+
+    protected void AddDomainEvent(IDomainEvent domainEvent)
+        => _domainEvents.Add(domainEvent);
+
+    public void ClearDomainEvents() => _domainEvents.Clear();
+
+    internal void IncrementVersion() => Version++;
+}
+
+// 注文ステータスのState Machine
+public enum OrderStatus
+{
+    Draft,      // 作成中（カートに相当）
+    Placed,     // 注文確定
+    Paid,       // 支払い完了
+    Shipped,    // 出荷済み
+    Delivered,  // 配達完了
+    Cancelled   // キャンセル済み
+}
+
+// Order Aggregate Root の完全実装
+public sealed class Order : AggregateRoot<OrderId>
+{
+    private readonly List<OrderItem> _items = [];
+
+    // 外部公開プロパティ（すべてprivateセッター）
+    public CustomerId CustomerId { get; private set; } = default!;
+    public OrderStatus Status { get; private set; }
+    public Money TotalAmount { get; private set; } = Money.Zero("JPY");
+    public ShippingAddress? ShippingAddress { get; private set; }
+    public DateTime? PlacedAt { get; private set; }
+    public DateTime? PaidAt { get; private set; }
+    public DateTime? CancelledAt { get; private set; }
+    public string? CancellationReason { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public DateTime UpdatedAt { get; private set; }
+
+    // 内部コレクション: ReadOnlyで公開
+    public IReadOnlyList<OrderItem> Items => _items.AsReadOnly();
+
+    // EF Core のためのprivateコンストラクタ
+    private Order() { }
+
+    // ファクトリメソッド: 新規注文の作成
+    public static Order Create(CustomerId customerId)
+    {
+        ArgumentNullException.ThrowIfNull(customerId);
+
+        var now = DateTime.UtcNow;
+        var order = new Order
+        {
+            Id = OrderId.NewId(),
+            CustomerId = customerId,
+            Status = OrderStatus.Draft,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        order.AddDomainEvent(new OrderCreatedEvent(order.Id, customerId, now));
+        return order;
+    }
+
+    // アイテム追加
+    public void AddItem(ProductId productId, string productName, int quantity, Money unitPrice)
+    {
+        ArgumentNullException.ThrowIfNull(productId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(productName);
+
+        EnsureStatus(OrderStatus.Draft, "アイテムを追加");
+
+        if (quantity <= 0)
+            throw new DomainException("数量は1以上でなければなりません。");
+
+        if (unitPrice.Amount < 0)
+            throw new DomainException("単価は0以上でなければなりません。");
+
+        if (_items.Count >= 100)
+            throw new DomainException("注文アイテムは最大100件です。");
+
+        var existing = _items.FirstOrDefault(i => i.ProductId == productId);
+        if (existing is not null)
+        {
+            existing.IncreaseQuantity(quantity);
+        }
+        else
+        {
+            _items.Add(OrderItem.Create(productId, productName, quantity, unitPrice));
+        }
+
+        RecalculateTotal();
+        Touch();
+    }
+
+    // アイテム削除
+    public void RemoveItem(OrderItemId itemId)
+    {
+        EnsureStatus(OrderStatus.Draft, "アイテムを削除");
+
+        var item = FindItemOrThrow(itemId);
+        _items.Remove(item);
+
+        RecalculateTotal();
+        Touch();
+    }
+
+    // 配送先住所の設定
+    public void SetShippingAddress(ShippingAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+
+        if (Status is OrderStatus.Shipped or OrderStatus.Delivered)
+            throw new DomainException("出荷済みの注文の配送先は変更できません。");
+
+        if (Status is OrderStatus.Cancelled)
+            throw new DomainException("キャンセル済みの注文の配送先は変更できません。");
+
+        ShippingAddress = address;
+        Touch();
+    }
+
+    // 注文確定
+    public void Place()
+    {
+        EnsureStatus(OrderStatus.Draft, "注文を確定");
+
+        if (_items.Count == 0)
+            throw new DomainException("アイテムのない注文は確定できません。");
+
+        if (ShippingAddress is null)
+            throw new DomainException("配送先住所を設定してから注文を確定してください。");
+
+        var now = DateTime.UtcNow;
+        Status = OrderStatus.Placed;
+        PlacedAt = now;
+        Touch();
+
+        AddDomainEvent(new OrderPlacedEvent(
+            OrderId: Id,
+            CustomerId: CustomerId,
+            Items: _items.Select(i => new OrderItemSnapshot(
+                i.ProductId, i.Quantity, i.UnitPrice, i.ProductNameSnapshot)).ToList(),
+            TotalAmount: TotalAmount,
+            ShippingAddress: ShippingAddress,
+            PlacedAt: now
+        ));
+    }
+
+    // 支払い完了
+    public void MarkAsPaid(PaymentId paymentId)
+    {
+        EnsureStatus(OrderStatus.Placed, "支払いを完了");
+
+        var now = DateTime.UtcNow;
+        Status = OrderStatus.Paid;
+        PaidAt = now;
+        Touch();
+
+        AddDomainEvent(new OrderPaidEvent(Id, CustomerId, paymentId, TotalAmount, now));
+    }
+
+    // 出荷済みにする
+    public void MarkAsShipped(ShipmentId shipmentId)
+    {
+        EnsureStatus(OrderStatus.Paid, "出荷済みに変更");
+
+        Status = OrderStatus.Shipped;
+        Touch();
+
+        AddDomainEvent(new OrderShippedEvent(Id, CustomerId, shipmentId, DateTime.UtcNow));
+    }
+
+    // 配達完了
+    public void MarkAsDelivered()
+    {
+        EnsureStatus(OrderStatus.Shipped, "配達完了に変更");
+
+        Status = OrderStatus.Delivered;
+        Touch();
+
+        AddDomainEvent(new OrderDeliveredEvent(Id, CustomerId, DateTime.UtcNow));
+    }
+
+    // キャンセル
+    public void Cancel(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        if (Status is OrderStatus.Shipped or OrderStatus.Delivered)
+            throw new DomainException("出荷済み・配達完了の注文はキャンセルできません。");
+
+        if (Status is OrderStatus.Cancelled)
+            throw new DomainException("すでにキャンセル済みです。");
+
+        var prevStatus = Status;
+        var now = DateTime.UtcNow;
+        Status = OrderStatus.Cancelled;
+        CancelledAt = now;
+        CancellationReason = reason;
+        Touch();
+
+        AddDomainEvent(new OrderCancelledEvent(Id, CustomerId, prevStatus, reason, now));
+    }
+
+    // 内部ヘルパー
+    private void EnsureStatus(OrderStatus expected, string operation)
+    {
+        if (Status != expected)
+            throw new DomainException(
+                $"{operation}するには注文が{expected}状態でなければなりません。現在: {Status}");
+    }
+
+    private OrderItem FindItemOrThrow(OrderItemId itemId)
+        => _items.FirstOrDefault(i => i.Id == itemId)
+            ?? throw new DomainException($"注文アイテムが見つかりません: {itemId}");
+
+    private void RecalculateTotal()
+    {
+        TotalAmount = _items.Count == 0
+            ? Money.Zero("JPY")
+            : _items.Aggregate(Money.Zero("JPY"), (sum, item) => sum + item.SubTotal);
+    }
+
+    private void Touch() => UpdatedAt = DateTime.UtcNow;
+}
+```
+
+---
+
+## 4. Aggregateの境界を決める実践的手法
+
+### Event Stormingから境界を発見する手順
+
+Event StormingはAggregateの境界を発見するための最も効果的な手法です。ステップを説明します。
+
+**Step 1: Domain Eventを列挙する（オレンジの付箋）**
+
+ECサイトの例：
+- `OrderCreated` / `ItemAdded` / `OrderPlaced` / `PaymentReceived` / `InventoryReserved` / `ShipmentCreated` / `OrderDelivered`
+
+**Step 2: Commandを対応させる（青の付箋）**
+
+各EventのトリガーとなるCommand：
+- `CreateOrder` → `OrderCreated`
+- `AddItemToOrder` → `ItemAdded`
+- `PlaceOrder` → `OrderPlaced`
+
+**Step 3: Aggregateを識別する（黄色の付箋）**
+
+「このCommandを処理して、このEventを発行するのは誰か？」で考えます：
+- `CreateOrder`, `AddItemToOrder`, `PlaceOrder` → `Order` Aggregate
+- `ReserveInventory` → `Inventory` Aggregate
+- `CreateShipment`, `MarkAsShipped` → `Shipment` Aggregate
+
+### 「3つの問い」で境界を確認する
+
+Event Stormingで仮決めした境界を、次の3つの問いで検証します。
+
+**問い1: 「一緒に作成されるか？」**
+
+OrderとOrderItemは一緒に（あるいは直後に）作られます。OrderItemだけが先に存在することはありません。→ 同じAggregate
+
+OrderとShipmentは別のタイミングで作られます（Order確定後、ある条件を満たしたときにShipmentが生成される）。→ 別Aggregate
+
+**問い2: 「一緒に削除されるか？」**
+
+Orderが削除されたらOrderItemも削除されます（Cascade Delete）。→ 同じAggregate
+
+Orderが削除されてもProductは削除されません。→ 別Aggregate
+
+**問い3: 「ルールが繋がっているか？」**
+
+「注文合計 = アイテム合計の合算」はOrderとOrderItemのルールが繋がっています。→ 同じAggregate
+
+「在庫数が0以下にならない」はInventoryだけのルールです。Orderとは繋がっていません。→ 別Aggregate
+
+### ECサイト例: 境界決定全工程
+
+```mermaid
+classDiagram
+    class Order {
+        <<Aggregate Root>>
+        +OrderId id
+        +CustomerId customerId
+        +OrderStatus status
+        +Money totalAmount
+        +ShippingAddress shippingAddress
+        +AddItem()
+        +RemoveItem()
+        +Place()
+        +Cancel()
+    }
+
+    class OrderItem {
+        <<Entity>>
+        +OrderItemId id
+        +ProductId productId
+        +int quantity
+        +Money unitPrice
+        +string productNameSnapshot
+        +Money SubTotal
+    }
+
+    class ShoppingCart {
+        <<Aggregate Root>>
+        +CartId id
+        +CustomerId customerId
+        +AddItem()
+        +RemoveItem()
+        +Checkout()
+    }
+
+    class CartItem {
+        <<Entity>>
+        +CartItemId id
+        +ProductId productId
+        +int quantity
+    }
+
+    class Product {
+        <<Aggregate Root>>
+        +ProductId id
+        +string name
+        +Money price
+        +ProductStatus status
+    }
+
+    class Customer {
+        <<Aggregate Root>>
+        +CustomerId id
+        +string name
+        +Email email
+    }
+
+    Order "1" *-- "1..*" OrderItem : contains
+    ShoppingCart "1" *-- "0..*" CartItem : contains
+
+    Order ..> CustomerId : references by ID
+    Order ..> ProductId : references by ID via items
+    ShoppingCart ..> CustomerId : references by ID
+    ShoppingCart ..> ProductId : references by ID via items
+```
+
+| Entity | 所属Aggregate | 理由 |
+|-------|-------------|------|
+| OrderItem | Order | 一緒に作成・削除、合計ルールで繋がる |
+| ShippingAddress (VO) | Order | Orderの一部として常に存在、独立した生存期間なし |
+| CartItem | ShoppingCart | カートの操作で常にセット |
+| Product | Product (単独) | 独自の生存期間、カタログ変更は注文と無関係 |
+| Customer | Customer (単独) | 注文より長い生存期間、独立した操作 |
+
+---
+
+## 5. 楽観的ロック（Optimistic Locking）の実装
+
+### なぜ大きなAggregateでロック競合が起きるか
+
+楽観的ロックの仕組みをおさらいします。
+
+```
+1. ユーザーAが Order(id=1, version=5) を読み取る
+2. ユーザーBが Order(id=1, version=5) を読み取る
+3. ユーザーAが Order を更新: UPDATE ... WHERE id=1 AND version=5 → version=6 に更新
+4. ユーザーBが Order を更新: UPDATE ... WHERE id=1 AND version=5 → 0件更新（version=5はもう存在しない）
+5. ユーザーBはDbUpdateConcurrencyExceptionを受け取り、リトライまたはエラー表示
+```
+
+大きなAggregateでは、本来は干渉しない操作（レビュー投稿、配送更新、支払い記録）が同一のVersionを競い合うため、不必要な競合が増加します。
+
+### バージョニングの実装とEF Core
+
+```csharp
+// Aggregate Rootにバージョンを追加
+public abstract class AggregateRoot<TId> where TId : notnull
+{
+    public TId Id { get; protected set; } = default!;
+
+    // 楽観的ロック用のバージョン（EF CoreのConcurrencyTokenとしてマッピング）
+    public uint Version { get; private set; }
+}
+
+// EF Core での ConcurrencyToken 設定
+public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
+{
+    public void Configure(EntityTypeBuilder<Order> builder)
+    {
+        builder.HasKey(o => o.Id);
+
+        // RowVersion（SQL Server）を使った楽観的ロック
+        builder.Property<byte[]>("RowVersion")
+            .IsRowVersion()
+            .IsConcurrencyToken();
+
+        // または、手動バージョン管理
+        builder.Property(o => o.Version)
+            .IsConcurrencyToken();
+    }
+}
+
+// Repository での使用例（例外ハンドリング込み）
+public sealed class OrderRepository : IOrderRepository
+{
+    private readonly AppDbContext _context;
+
+    public async Task SaveAsync(Order order, CancellationToken ct = default)
+    {
+        try
+        {
+            if (_context.Entry(order).State == EntityState.Detached)
+                _context.Orders.Add(order);
+
+            await _context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // 楽観的ロック競合を Domain 例外に変換
+            throw new OrderConcurrencyException(
+                $"注文(Id={order.Id})が別のユーザーに更新されています。最新の情報を取得してから再試行してください。",
+                ex
+            );
+        }
+    }
+}
+```
+
+---
+
+## 6. Aggregateの永続化とORM（EF Core）
+
+### 「ORMのエンティティ」とDDDのEntityは別物
+
+多くの開発者が混同しますが、「EF CoreのEntity（`DbSet<T>`に登録されるクラス）」と「DDDのEntity（Identity・Behaviorを持つドメインオブジェクト）」は概念が異なります。
+
+| 観点 | EF Core Entity | DDD Entity |
+|-----|--------------|-----------|
+| 目的 | データベースのレコードとのマッピング | ビジネス概念の表現とルール強制 |
+| ミュータビリティ | 自由にプロパティを変更 | publicセッターは原則禁止 |
+| 依存関係 | EF Coreに強く依存 | Infrastructureに依存しない |
+| コレクション | `List<T>`をpublicで公開 | `IReadOnlyList<T>`で公開 |
+
+EF Coreはprivateセッターのプロパティに値を設定できます（リフレクション経由）。また、privateコンストラクタも問題なく使えます。
+
+### AppDbContext.OnModelCreating の完全設定
+
+```csharp
+// Domain Entity（EF Coreを意識せずに書ける）
+public sealed class OrderItem : Entity<OrderItemId>
+{
+    public ProductId ProductId { get; private set; } = default!;
+    public string ProductNameSnapshot { get; private set; } = string.Empty;
+    public Money UnitPrice { get; private set; } = default!;
+    public int Quantity { get; private set; }
+
+    public Money SubTotal => UnitPrice * Quantity;
+
+    // EF Core用: privateコンストラクタ（パラメータなし）
+    private OrderItem() { }
+
+    // ドメイン用: internalファクトリメソッド
+    internal static OrderItem Create(
+        ProductId productId, string productName, int quantity, Money unitPrice)
+    {
+        return new OrderItem
+        {
+            Id = OrderItemId.NewId(),
+            ProductId = productId,
+            ProductNameSnapshot = productName,
+            Quantity = quantity,
+            UnitPrice = unitPrice
+        };
+    }
+
+    internal void IncreaseQuantity(int additional)
+    {
+        if (additional <= 0) throw new DomainException("追加数量は1以上");
+        Quantity += additional;
+    }
+}
+
+// AppDbContext.OnModelCreating の完全設定
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    // Orderの設定
+    modelBuilder.Entity<Order>(order =>
+    {
+        order.ToTable("Orders");
+        order.HasKey(o => o.Id);
+
+        // OrderId (Value Object) のマッピング
+        order.Property(o => o.Id)
+            .HasConversion(
+                id => id.Value,
+                value => new OrderId(value)
+            )
+            .HasColumnName("Id");
+
+        // CustomerId のマッピング
+        order.Property(o => o.CustomerId)
+            .HasConversion(
+                id => id.Value,
+                value => new CustomerId(value)
+            )
+            .HasColumnName("CustomerId");
+
+        // OrderStatus を文字列で保存
+        order.Property(o => o.Status)
+            .HasConversion<string>()
+            .HasMaxLength(50);
+
+        // Money (Value Object) を所有型としてマッピング
+        order.OwnsOne(o => o.TotalAmount, money =>
+        {
+            money.Property(m => m.Amount)
+                .HasColumnName("TotalAmount")
+                .HasPrecision(18, 2);
+            money.Property(m => m.Currency)
+                .HasColumnName("TotalCurrency")
+                .HasMaxLength(3);
+        });
+
+        // ShippingAddress (Value Object) を所有型としてマッピング
+        order.OwnsOne(o => o.ShippingAddress, addr =>
+        {
+            addr.Property(a => a.PostalCode)
+                .HasColumnName("ShippingPostalCode")
+                .HasMaxLength(10);
+            addr.Property(a => a.Prefecture)
+                .HasColumnName("ShippingPrefecture")
+                .HasMaxLength(10);
+            addr.Property(a => a.City)
+                .HasColumnName("ShippingCity")
+                .HasMaxLength(100);
+            addr.Property(a => a.Street)
+                .HasColumnName("ShippingStreet")
+                .HasMaxLength(200);
+            addr.Property(a => a.Building)
+                .HasColumnName("ShippingBuilding")
+                .HasMaxLength(200)
+                .IsRequired(false);
+        });
+
+        // 楽観的ロック（PostgreSQL: xmin列を利用）
+        order.UseXminAsConcurrencyToken();
+        // SQL Server の場合: order.Property<byte[]>("RowVersion").IsRowVersion();
+
+        // OrderItemのマッピング（privateフィールド名を指定してHasMany）
+        order.HasMany(typeof(OrderItem), "_items")
+            .WithOne()
+            .HasForeignKey("OrderId")
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // インデックス
+        order.HasIndex(o => o.CustomerId);
+        order.HasIndex(o => o.Status);
+        order.HasIndex(o => o.PlacedAt);
+    });
+
+    // OrderItemの設定
+    modelBuilder.Entity<OrderItem>(item =>
+    {
+        item.ToTable("OrderItems");
+        item.HasKey(i => i.Id);
+
+        item.Property(i => i.Id)
+            .HasConversion(id => id.Value, value => new OrderItemId(value));
+
+        item.Property(i => i.ProductId)
+            .HasConversion(id => id.Value, value => new ProductId(value));
+
+        item.Property(i => i.ProductNameSnapshot)
+            .HasMaxLength(500)
+            .IsRequired();
+
+        item.OwnsOne(i => i.UnitPrice, money =>
+        {
+            money.Property(m => m.Amount)
+                .HasColumnName("UnitPriceAmount")
+                .HasPrecision(18, 2);
+            money.Property(m => m.Currency)
+                .HasColumnName("UnitPriceCurrency")
+                .HasMaxLength(3);
+        });
+
+        // SubTotalは計算プロパティなのでDBには保存しない
+        item.Ignore(i => i.SubTotal);
+
+        item.HasIndex("OrderId");
+    });
+}
+```
+
+---
+
+## 7. よくある設計ミス TOP8（Before/After）
+
+```mermaid
+graph LR
+    subgraph "アンチパターン"
+        A["GOD Aggregate<br/>全部入り"]
+        B["オブジェクト参照<br/>越境"]
+        C["AppService に<br/>Invariant 書く"]
+        D["複数 Aggregate を<br/>1 TX で更新"]
+    end
+
+    subgraph "正しい設計"
+        E["小さな Aggregate<br/>1-3 Entity"]
+        F["ID 参照のみ<br/>越境禁止"]
+        G["Aggregate Root<br/>に Invariant"]
+        H["Domain Event で<br/>結果整合性"]
+    end
+
+    A --> E
+    B --> F
+    C --> G
+    D --> H
+
+    style A fill:#ff6b6b,color:#fff
+    style B fill:#ff6b6b,color:#fff
+    style C fill:#ff6b6b,color:#fff
+    style D fill:#ff6b6b,color:#fff
+    style E fill:#51cf66,color:#fff
+    style F fill:#51cf66,color:#fff
+    style G fill:#51cf66,color:#fff
+    style H fill:#51cf66,color:#fff
+```
+
+### ミス1: AggregateGが大きすぎる（GOD Aggregate）
+
+```csharp
+// ❌ Before
+public class Order
+{
+    public Customer Customer { get; set; }      // 丸ごと持つ
+    public List<Payment> Payments { get; set; } // 別Aggregateの候補
+    public List<Shipment> Shipments { get; set; }
+    public List<Review> Reviews { get; set; }
+    public Inventory LinkedInventory { get; set; }
+}
+
+// ✅ After
+public class Order : AggregateRoot<OrderId>
+{
+    public CustomerId CustomerId { get; private set; }  // IDのみ
+    // Payments/Shipments/Reviewsは別Aggregate
+}
+```
+
+**症状**: ロック競合率が高い、Aggregateのロードが遅い、ひとつのビジネス操作で無関係なデータまで触れる。
+
+### ミス2: Aggregateをまたぐオブジェクト参照
+
+```csharp
+// ❌ Before
+public class OrderItem
+{
+    public Product Product { get; set; } // Product Aggregateへの直接参照
+}
+// 使う側: order.Items[0].Product.Category.ParentCategory.Name
+
+// ✅ After
+public class OrderItem
+{
+    public ProductId ProductId { get; private set; } // IDのみ
+    public string ProductNameSnapshot { get; private set; } // 必要な情報はスナップショット
+}
+```
+
+**症状**: N+1問題、Lazy Loadingの乱用、Aggregate間の境界が実質ない状態。
+
+### ミス3: InvariantをApplication Serviceに書く
+
+```csharp
+// ❌ Before: Application Serviceにビジネスルール
+public class PlaceOrderUseCase
+{
+    public async Task ExecuteAsync(PlaceOrderCommand command)
+    {
+        var order = await _repo.GetByIdAsync(command.OrderId);
+
+        // InvariantをApplication Serviceに書いている
+        if (order.Items.Count == 0)
+            throw new BusinessException("アイテムが必要");
+
+        if (order.Status != "Draft")
+            throw new BusinessException("確定済み");
+
+        order.Status = "Placed"; // Aggregateをデータの入れ物として使っている
+        await _repo.SaveAsync(order);
+    }
+}
+
+// ✅ After: InvariantはAggregateに
+public class PlaceOrderUseCase
+{
+    public async Task ExecuteAsync(PlaceOrderCommand command)
+    {
+        var order = await _repo.GetByIdAsync(command.OrderId);
+        order.Place(); // Invariantの検証はAggregate内部
+        await _repo.SaveAsync(order);
+    }
+}
+```
+
+**症状**: ビジネスルールが複数のService/Controller/Handlerに散らばり、一貫した検証ができなくなる。Aggregateが「ただのデータ構造」に成り下がる。
+
+### ミス4: 1つのトランザクションで複数のAggregateを更新する
+
+```csharp
+// ❌ Before: 複数Aggregateを1TXで更新
+public async Task PlaceOrderAsync(OrderId orderId)
+{
+    using var tx = await _db.BeginTransactionAsync();
+
+    var order = await _orderRepo.GetByIdAsync(orderId);
+    order.Place();
+
+    // 同じトランザクションで別Aggregateを更新
+    var inventory = await _inventoryRepo.GetByProductIdAsync(productId);
+    inventory.Reserve(quantity);
+
+    await _orderRepo.SaveAsync(order);
+    await _inventoryRepo.SaveAsync(inventory);
+
+    await tx.CommitAsync();
+}
+
+// ✅ After: Domain EventでInventoryを非同期更新
+public async Task PlaceOrderAsync(OrderId orderId)
+{
+    var order = await _orderRepo.GetByIdAsync(orderId);
+    order.Place(); // OrderPlacedEventが発行される
+    await _orderRepo.SaveAsync(order); // OrderのみをTXで更新
+
+    // OrderPlacedEventHandlerが非同期にInventoryを更新（別TX）
+}
+```
+
+**症状**: マイクロサービス移行時に困難、単一トランザクションの肥大化によるデッドロック、分散トランザクション問題。
+
+### ミス5: AggregateをDTOとして使う
+
+```csharp
+// ❌ Before: AggregateをAPIのレスポンスとして直接返す
+[HttpGet("{id}")]
+public async Task<Order> GetOrder(Guid id)
+{
+    return await _orderRepo.GetByIdAsync(new OrderId(id));
+    // OrderにはDomain Eventのリストも含まれ、セキュリティ上も問題
+}
+
+// ✅ After: 専用のRead Model/DTOに変換
+[HttpGet("{id}")]
+public async Task<OrderResponse> GetOrder(Guid id)
+{
+    var order = await _orderRepo.GetByIdAsync(new OrderId(id));
+    return OrderResponse.From(order);
+    // または CQRS: クエリ側は別のRead Modelを使う
+}
+```
+
+### ミス6: Domain ServiceにInvariantを書く
+
+```csharp
+// ❌ Before: Domain ServiceがAggregateの内部ルールを知っている
+public class OrderDomainService
+{
+    public void ValidateAndPlace(Order order)
+    {
+        if (order.Items.Count == 0)  // Aggregateの内部状態に直接アクセス
+            throw new DomainException("...");
+
+        order.Status = OrderStatus.Placed; // セッターを直接操作
+    }
+}
+
+// ✅ After: Invariantはaggregate、Domain Serviceは複数Aggregate間の調整のみ
+public class OrderDomainService
+{
+    // Domain ServiceはAggregate単独で解決できない「複数Aggregate間の調整」のみ
+    public async Task<bool> CanPlaceOrderAsync(
+        Order order,
+        IInventoryService inventoryService)
+    {
+        foreach (var item in order.Items)
+        {
+            var available = await inventoryService.GetAvailableQuantityAsync(item.ProductId);
+            if (available < item.Quantity) return false;
+        }
+        return true;
+    }
+}
+```
+
+### ミス7: AggregateがRepositoryを持つ
+
+```csharp
+// ❌ Before: AggregateがRepositoryを注入されている
+public class Order
+{
+    private readonly IProductRepository _productRepo; // 依存注入
+
+    public async Task AddItemAsync(ProductId productId, int quantity)
+    {
+        var product = await _productRepo.GetByIdAsync(productId); // Aggregateの中でクエリ
+        _items.Add(OrderItem.Create(productId, product.Name, quantity, product.Price));
+    }
+}
+
+// ✅ After: 必要な情報を引数で渡す
+public class Order
+{
+    public void AddItem(ProductId productId, string productName, int quantity, Money unitPrice)
+    {
+        _items.Add(OrderItem.Create(productId, productName, quantity, unitPrice));
+    }
+}
+// Application Service側でProduct情報を取得してOrderに渡す
+```
+
+**症状**: テストが困難、Aggregateがインフラ層に依存、循環依存のリスク。
+
+### ミス8: Lazy Loadingに依存したAggregate設計
+
+```csharp
+// ❌ Before: Lazy Loadingに依存
+var order = await _context.Orders.FindAsync(id);
+// EF Coreが後からLazy LoadでItemsをロード（N+1の温床）
+var total = order.Items.Sum(i => i.Quantity * i.UnitPrice.Amount);
+
+// ✅ After: 必要なデータを明示的にEager Load
+var order = await _context.Orders
+    .Include(o => o.Items)  // 明示的なInclude
+    .SingleOrDefaultAsync(o => o.Id == id);
+```
+
+---
+
+## 8. Aggregateのコードレビュー観点
+
+### レビューチェックリスト20項目
+
+アーキテクトとしてAggregateのコードレビューをする際のチェックリストです。
+
+**Invariantの設計（5項目）**
+
+- [ ] **INV-1**: Aggregate Rootのメソッドで状態を変更するすべての箇所でInvariantを検証しているか？
+- [ ] **INV-2**: InvariantがApplication ServiceやDomain Serviceに漏れていないか？
+- [ ] **INV-3**: Invariantの検証が複数箇所に重複して書かれていないか？（DRY）
+- [ ] **INV-4**: ファクトリメソッドでも作成時のInvariantを検証しているか？
+- [ ] **INV-5**: Invariantのエラーメッセージがビジネス用語で書かれているか？（技術的な表現を避けているか？）
+
+**境界設計（5項目）**
+
+- [ ] **BOUND-1**: 他のAggregateへの参照はIDのみか？（オブジェクト参照になっていないか？）
+- [ ] **BOUND-2**: Aggregateが3Entity以上になっている場合、分割を検討したか？
+- [ ] **BOUND-3**: 1つのユースケースで複数のAggregateを同一トランザクションで更新していないか？
+- [ ] **BOUND-4**: Domain Eventで境界外の更新を行っているか？（直接呼び出していないか？）
+- [ ] **BOUND-5**: AggregateをまたぐビジネスルールはDomain Serviceとして分離されているか？
+
+**カプセル化（4項目）**
+
+- [ ] **CAP-1**: 内部のEntityはReadOnlyリストとして公開されているか？
+- [ ] **CAP-2**: 内部Entityのファクトリメソッドはinternalスコープか？
+- [ ] **CAP-3**: Aggregate Rootのコンストラクタはprivateか（ファクトリメソッドのみで生成されるか）？
+- [ ] **CAP-4**: Aggregateがインフラ層（Repository、DbContext）に依存していないか？
+
+**永続化（3項目）**
+
+- [ ] **PERS-1**: EF CoreのprivateフィールドアクセスでコレクションはNamingConvention準拠か？
+- [ ] **PERS-2**: 楽観的ロック（ConcurrencyToken）が設定されているか？
+- [ ] **PERS-3**: 不要なLazy Loadingが残っていないか？
+
+**テスト（3項目）**
+
+- [ ] **TEST-1**: Aggregateの各操作に対してUnit Testが書かれているか？
+- [ ] **TEST-2**: 異常系（Invariant違反）のテストがあるか？
+- [ ] **TEST-3**: テストはRepositoryをモックせずに純粋なドメインロジックとしてテストされているか？
+
+### 具体的な悪いコードと指摘方法
+
+**悪いコードの例**
+
+```csharp
+// PRで見つけた問題コード
+public class OrderService
+{
+    public async Task AddItemToOrderAsync(Guid orderId, Guid productId, int qty)
+    {
+        var order = await _orderRepo.GetByIdAsync(new OrderId(orderId));
+        var product = await _productRepo.GetByIdAsync(new ProductId(productId));
+
+        // INV-2違反: Invariantが漏れている
+        if (order.Status != OrderStatus.Draft)
+            throw new Exception("Cannot modify placed order");
+
+        if (qty <= 0)
+            throw new Exception("Quantity must be positive");
+
+        // CAP-1違反: 内部コレクションに直接追加
+        order.Items.Add(new OrderItem
+        {
+            ProductId = product.Id,
+            ProductName = product.Name,
+            Quantity = qty,
+            UnitPrice = product.Price
+        });
+
+        // INV-3: 合計計算がService側にある
+        order.TotalAmount = order.Items.Sum(i => i.Quantity * i.UnitPrice.Amount);
+
+        await _orderRepo.SaveAsync(order);
+    }
+}
+```
+
+**レビューコメントの書き方**
+
+```
+【INV-2違反】Invariantの漏洩
+
+`Status != OrderStatus.Draft`と`qty <= 0`の検証は
+Application Serviceではなく`Order.AddItem()`の中に移動してください。
+
+理由: このチェックが`OrderService`にあると、
+①別のServiceから`order.Items.Add()`を直接呼ばれた場合に
+  検証がスキップされます
+②Invariantがどこに書いてあるか発見しにくくなります
+
+期待する実装:
+order.AddItem(productId, product.Name, qty, product.Price);
+// InvariantはOrder.AddItem()が検証する
+
+【CAP-1違反】内部コレクションへの直接アクセス
+order.Items は IReadOnlyList<T> で公開し、
+直接 Add できないようにしてください。
+```
+
+---
+
+## 9. アーキテクトの視点
+
+### Aggregateサイズに関する経験則
+
+**「1画面操作 = 1Aggregate更新」**
+
+これはVaughn Vernonの論文から派生した実践的な経験則です。ユーザーが画面で行う1つの操作（ボタンクリック、フォーム送信）で更新されるAggregateは原則として1つです。複数のAggregateを同時に更新したいと感じたら、それはDomain Event + 結果整合性のシグナルです。
+
+**「ユースケース = 1コマンド = 1Aggregate更新」**
+
+Application Serviceの1メソッドが複数のAggregateを`SaveAsync`していたら、設計の見直しを提案します。
+
+```csharp
+// アーキテクトが発見したい危険なパターン
+public async Task CheckoutAsync(CheckoutCommand command)
+{
+    var cart = await _cartRepo.GetByIdAsync(command.CartId);
+    var order = cart.Checkout(); // Order Aggregate生成
+    var customer = await _customerRepo.GetByIdAsync(command.CustomerId);
+
+    customer.AddOrderHistory(order.Id); // 複数Aggregate更新のシグナル！
+
+    await _orderRepo.SaveAsync(order);
+    await _customerRepo.SaveAsync(customer); // ロック競合のリスク
+    await _cartRepo.DeleteAsync(cart);       // さらに追加
+}
+```
+
+このパターンを見たら：「`customer.AddOrderHistory`はOrderPlacedEventで非同期に処理できませんか？」と問いかけます。
+
+### マイクロサービス時代のAggregate設計
+
+マイクロサービスアーキテクチャでは、Aggregateの境界がそのままサービスの境界候補になります。
+
+```mermaid
+graph TB
+    subgraph "Order Service"
+        OAgg["Order Aggregate"]
+        OI["OrderItem"]
+        OAgg --> OI
+    end
+
+    subgraph "Inventory Service"
+        IAgg["Inventory Aggregate"]
+        IRsv["Reservation"]
+        IAgg --> IRsv
+    end
+
+    subgraph "Customer Service"
+        CAgg["Customer Aggregate"]
+        CAddr["Address"]
+        CAgg --> CAddr
+    end
+
+    subgraph "Payment Service"
+        PAgg["Payment Aggregate"]
+    end
+
+    OAgg -->|"OrderPlacedEvent<br/>Message Broker"| IAgg
+    OAgg -->|"OrderPlacedEvent<br/>Message Broker"| CAgg
+    PAgg -->|"PaymentCompletedEvent<br/>Message Broker"| OAgg
+```
+
+マイクロサービスへの移行をモノリスから始める場合、Aggregate境界が正しく設計されていれば、サービス分割時の工数が大幅に削減されます。逆に、Aggregate境界が曖昧（GOD Aggregate、オブジェクト参照が散乱）なシステムをマイクロサービスに分割しようとすると、分散トランザクションの泥沼にはまります。
+
+### リファクタリングのタイミング
+
+Aggregateのリファクタリングが必要なタイミングを示す4つのシグナル：
+
+1. **ロック競合のアラートが増加**: APMツールで`DbUpdateConcurrencyException`が増えている
+2. **Aggregateのロードが500ms超え**: 含まれるEntityが多すぎる証拠
+3. **Application Serviceにビジネスロジックが集まっている**: Invariantの漏洩が起きている
+4. **新機能追加のたびにAggregate全体に影響が出る**: 責務が過剰に集中している
+
+リファクタリングの順序：
+1. まずテストを書いて現在の振る舞いをロック
+2. 内部EntityをAggregate外に切り出す（新しいAggregate作成）
+3. オブジェクト参照をID参照に変換
+4. 直接更新をDomain Event経由に変換
+
+---
+
+## 10. 演習問題（3問、解答付き）
+
+### 問題1: Aggregate境界の識別
+
+次のシナリオから、適切なAggregate境界を特定してください。
+
+**シナリオ**: 病院の予約管理システム。患者が診察を予約する。診察室には同時に1人しか入れない。医師は複数の診察室を担当する。予約は15分単位で行われる。
+
+**質問**: `Patient`、`Appointment`、`Doctor`、`ExaminationRoom`をどのようにAggregateに分割しますか？また、「同じ時間帯に同じ診察室への重複予約を防ぐ」Invariantはどこに書きますか？
+
+**解答**:
+
+```csharp
+// 推奨する境界設計
+
+// Appointment Aggregate: 予約の整合性を担う
+public sealed class Appointment : AggregateRoot<AppointmentId>
+{
+    public PatientId PatientId { get; private set; }                // ID参照
+    public DoctorId DoctorId { get; private set; }                  // ID参照
+    public ExaminationRoomId ExaminationRoomId { get; private set; } // ID参照
+    public TimeSlot TimeSlot { get; private set; }                  // Value Object
+    public AppointmentStatus Status { get; private set; }
+
+    // "同じ時間帯に同じ診察室への重複予約を防ぐ"Invariantは
+    // ExaminationRoom Aggregateに書く（診察室がスケジュールを管理）
+}
+
+// ExaminationRoom Aggregate: 診察室のスケジュール整合性
+public sealed class ExaminationRoom : AggregateRoot<ExaminationRoomId>
+{
+    private readonly List<TimeSlot> _bookedSlots = [];
+
+    public void BookSlot(TimeSlot slot, AppointmentId appointmentId)
+    {
+        // Invariant: 同時間帯の重複チェック
+        if (_bookedSlots.Any(s => s.Overlaps(slot)))
+            throw new DomainException("この時間帯はすでに予約されています。");
+
+        _bookedSlots.Add(slot);
+        AddDomainEvent(new RoomSlotBookedEvent(Id, slot, appointmentId));
+    }
+}
+
+// Doctor と Patient は独立したAggregate（長い生存期間、独自の操作）
+public sealed class Doctor : AggregateRoot<DoctorId> { /* ... */ }
+public sealed class Patient : AggregateRoot<PatientId> { /* ... */ }
+```
+
+**解説**: 「同じ時間帯に同じ診察室への重複予約」はExaminationRoomのInvariantです。なぜなら、ExaminationRoomが「どの時間帯が予約済みか」を管理しており、このルールを守るためにはExaminationRoomの状態（予約済みスロット）が必要だからです。Appointmentは予約を表すAggregateですが、「どの部屋のどの時間帯が空いているか」を知っているのはExaminationRoomです。
+
+### 問題2: 楽観的ロック競合の解決
+
+次のコードで発生する問題を特定し、修正してください。
+
+```csharp
+// 問題のあるコード
+public class FlightSeatReservationService
+{
+    public async Task ReserveSeatAsync(FlightId flightId, SeatNumber seat, PassengerId passenger)
+    {
+        var flight = await _flightRepo.GetByIdAsync(flightId);
+
+        if (flight.IsSeatAvailable(seat))
+        {
+            flight.ReserveSeat(seat, passenger);
+            await _flightRepo.SaveAsync(flight);
+        }
+    }
+}
+```
+
+**解答**:
+
+```csharp
+// 問題: Time-of-Check/Time-of-Use (TOCTOU) 競合
+// IsSeatAvailable()の確認とReserveSeat()の間に別スレッドが同じ座席を予約できる
+
+// ✅ 修正案: 楽観的ロック + リトライで対処
+public async Task ReserveSeatAsync(FlightId flightId, SeatNumber seat, PassengerId passenger)
+{
+    const int MaxRetries = 3;
+    for (int attempt = 0; attempt < MaxRetries; attempt++)
+    {
+        try
+        {
+            var flight = await _flightRepo.GetByIdAsync(flightId);
+            flight.ReserveSeat(seat, passenger); // 内部でInvariant検証
+            await _flightRepo.SaveAsync(flight); // ConcurrencyTokenで競合を検知
+            return;
+        }
+        catch (FlightConcurrencyException) when (attempt < MaxRetries - 1)
+        {
+            // リトライ（指数バックオフを加えることが多い）
+            await Task.Delay(TimeSpan.FromMilliseconds(50 * (attempt + 1)));
+        }
+    }
+    throw new SeatUnavailableException(seat, "競合が続くため予約できませんでした。");
+}
+
+// Flight Aggregate内のReserveSeat
+public void ReserveSeat(SeatNumber seat, PassengerId passenger)
+{
+    var seatEntity = _seats.FirstOrDefault(s => s.Number == seat)
+        ?? throw new DomainException($"座席{seat}は存在しません。");
+
+    if (!seatEntity.IsAvailable)
+        throw new SeatUnavailableException(seat, "この座席はすでに予約されています。");
+
+    seatEntity.Reserve(passenger);
+    AddDomainEvent(new SeatReservedEvent(Id, seat, passenger, DateTime.UtcNow));
+}
+```
+
+**ポイント**: `IsSeatAvailable()`と`ReserveSeat()`の間に競合が入り込む余地がある以上、楽観的ロックで「更新時に競合を検知してリトライする」方式が正しいアプローチです。
+
+### 問題3: Aggregateのリファクタリング
+
+次の「肥大化したAggregate」を適切に分割してください。
+
+```csharp
+// 現在の設計（問題あり）
+public class BlogPost : AggregateRoot<BlogPostId>
+{
+    public string Title { get; set; }
+    public string Content { get; set; }
+    public AuthorId AuthorId { get; set; }
+    public List<Comment> Comments { get; set; }      // 問題1
+    public List<Tag> Tags { get; set; }
+    public List<Like> Likes { get; set; }            // 問題2
+    public List<ViewHistory> ViewHistories { get; set; } // 問題3
+    public PublicationStatus Status { get; set; }
+}
+```
+
+**解答**:
+
+```csharp
+// ✅ リファクタリング後
+
+// BlogPost Aggregate: 記事本体の整合性のみ
+public sealed class BlogPost : AggregateRoot<BlogPostId>
+{
+    private readonly List<Tag> _tags = [];
+
+    public string Title { get; private set; } = string.Empty;
+    public string Content { get; private set; } = string.Empty;
+    public AuthorId AuthorId { get; private set; } = default!;
+    public IReadOnlyList<Tag> Tags => _tags.AsReadOnly();
+    public PublicationStatus Status { get; private set; }
+
+    public void Publish()
+    {
+        if (string.IsNullOrWhiteSpace(Title))
+            throw new DomainException("タイトルなしで公開できません。");
+        if (string.IsNullOrWhiteSpace(Content))
+            throw new DomainException("本文なしで公開できません。");
+
+        Status = PublicationStatus.Published;
+        AddDomainEvent(new BlogPostPublishedEvent(Id, AuthorId, DateTime.UtcNow));
+    }
+
+    public void AddTag(Tag tag)
+    {
+        if (_tags.Count >= 10)
+            throw new DomainException("タグは最大10件です。");
+        if (!_tags.Contains(tag))
+            _tags.Add(tag);
+    }
+}
+
+// Comment Aggregate: コメントの独立した整合性境界
+// （BlogPostとは別のタイミングで作成・削除され、独立したInvariantを持つ）
+public sealed class Comment : AggregateRoot<CommentId>
+{
+    public BlogPostId BlogPostId { get; private set; } = default!; // ID参照
+    public AuthorId AuthorId { get; private set; } = default!;
+    public string Content { get; private set; } = string.Empty;
+    public bool IsDeleted { get; private set; }
+
+    public void SoftDelete(AuthorId requesterId)
+    {
+        if (AuthorId != requesterId)
+            throw new DomainException("他のユーザーのコメントは削除できません。");
+        IsDeleted = true;
+    }
+}
+
+// Likes: Value Objectまたはシンプルなカウンターとして扱う
+// ViewHistories: 完全に別の集計用テーブル（Analytics Read Model）で管理
+// → AggregateではなくRead Modelの問題
+```
+
+**解説**: `Comments`は独立した操作（コメント投稿・削除）と生存期間を持つためAggregate分離が正解です。`Likes`は記事に対する単純なカウンタであり、厳密なInvariantが不要なため、結果整合性のカウンターまたはRead Modelで管理するのが適切です。`ViewHistories`は分析用データであり、Writeモデル（Aggregate）に含めるべきではありません。CQRSのRead側で独立して管理します。
+
+---
+
+## 参考文献と著者の解釈
+
+### 一次資料
+
+1. **Vaughn Vernon (2011) — "Effective Aggregate Design" Part I-III**
+   *DDD Community (dddcommunity.org)*
+   Aggregateの4原則の原典。今でも最も重要な一次資料です。無料で入手できます。
+
+2. **Vaughn Vernon (2013) — "Implementing Domain-Driven Design"**
+   *Addison-Wesley*
+   第10章「Aggregates」が詳細。Vernonのアーキテクチャ事例が豊富です。
+
+3. **Eric Evans (2003) — "Domain-Driven Design: Tackling Complexity in the Heart of Software"**
+   *Addison-Wesley*
+   Aggregateの概念の原点（第6章）。Vernonの論文はこれを実装レベルで展開したものです。
+
+4. **Scott Millet & Nick Tune (2015) — "Patterns, Principles and Practices of Domain-Driven Design"**
+   *Wrox*
+   第3部でAggregateの実践的な境界設計を解説。Event Stormingとの組み合わせが詳しい。
+
+### 著者の解釈と補足
+
+**「小さなAggregateは正義」という原則の例外**
+
+Vernonは「1〜3 Entity」を目安と述べていますが、これは「絶対的なルール」ではありません。例えば、会計システムの「仕訳（JournalEntry）」は、借方・貸方の合計が一致するというInvariantを守るために、仕訳明細（JournalEntryLine）を複数含むことが合理的です。原則は「ビジネスのInvariantが要求する最小のまとまりにする」であり、その結果が1 Entityでも5 Entityでも、理由があれば正しいと言えます。
+
+**楽観的ロックか悲観的ロックか**
+
+本章では楽観的ロックを推奨していますが、在庫管理のような「瞬時に大量の競合が起きる」ユースケースでは、悲観的ロック（SELECT FOR UPDATE）の方が適切なケースもあります。重要なのは「どちらか一方が常に正しい」という思考を避けることです。競合率が高い（>30%）場合は悲観的ロック、低い場合は楽観的ロックが一般的な指針です。
+
+**Domain Eventの配送保証**
+
+本章では「Domain EventでInventoryを非同期更新する」と解説しましたが、実際の実装ではOutboxパターン（Transactional Outboxパターン）との組み合わせが推奨されます。Order Aggregateを保存するトランザクションの中でOutboxテーブルにもEventを書き込み、別のプロセスがOutboxを読んでメッセージブローカーに送信することで、「Orderは保存されたがEventが消えた」という消失を防ぎます。この詳細は第13章「Domain Events」で扱います。
+
+**「結果整合性」の受け入れ難さ**
+
+「同一トランザクションで全部一緒に更新できないのか」という抵抗を受けることがあります。これはビジネス担当者からよく出る声です。対話の際は「在庫の反映が3秒遅れることは許容できますか？」という問いで具体化します。多くの場合、3秒の遅延は許容されます。それが許容されるなら、結果整合性を選ぶ理由として「スケーラビリティの向上」「マイクロサービスへの移行容易性」「Aggregateのロック競合の低減」を提示できます。
+
+---
+
+*次章: 第10章「Repository — Aggregateの永続化抽象化」*
+
+*前章: 第8章「Domain Service — Aggregateをまたぐビジネスロジック」*
