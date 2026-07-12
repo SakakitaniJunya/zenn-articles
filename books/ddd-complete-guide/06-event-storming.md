@@ -1,3 +1,7 @@
+---
+title: "第6章: Event Storming — ドメイン知識を付箋で発見する"
+---
+
 # 第6章 Event Storming — 混沌から境界を掘り出す技法
 
 > "Event Storming is a flexible workshop format for collaborative exploration of complex business domains."

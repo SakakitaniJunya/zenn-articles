@@ -1,3 +1,7 @@
+---
+title: "第3章: ドメイン分類 — Core / Supporting / Generic で投資を最適化する"
+---
+
 # 第3章: ドメイン分類（Core / Supporting / Generic）
 
 > **アーキテクトレベル解説** — Eric Evans『Domain-Driven Design』(Blue Book) および Vaughn Vernon『Implementing Domain-Driven Design』(IDDD) の知識を前提とし、実務経験から得られた深い洞察を加えた完全ガイド

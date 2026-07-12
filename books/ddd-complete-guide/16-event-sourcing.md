@@ -1,3 +1,7 @@
+---
+title: "第16章: Event Sourcing — 状態ではなく出来事を永続化する"
+---
+
 # 第16章: Event Sourcing — 出来事の履歴で状態を再構築する
 
 ---

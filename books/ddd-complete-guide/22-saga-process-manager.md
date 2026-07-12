@@ -1,3 +1,7 @@
+---
+title: "第22章: Saga / Process Manager — 分散トランザクションを設計する"
+---
+
 # 第22章 Saga パターンと Process Manager — 分散トランザクションの完全ガイド
 
 ---
