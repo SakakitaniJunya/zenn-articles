@@ -4,6 +4,9 @@ title: "第1章: なぜ DDD が必要か — 「なんとなく動く」コー�
 
 # 第1章: なぜDDDなのか — ソフトウェア設計の根本問題と処方箋
 
+![The Entangled Domain vs The Bounded Model — 混沌から秩序へ](/images/ch01-why-ddd-engraving.jpg)
+*左: 絡み合ったレガシーコードのドメイン。右: DDDで整理されたBounded Model*
+
 ---
 
 ## 0. TL;DR（3行）
