@@ -1,1815 +1,2106 @@
-# 第20章　DDDアンチパターン — 避けるべき設計の落とし穴
+# 第20章: DDDアンチパターン 完全解説
 
 ---
 
-## TL;DR
+## 0. TL;DR
 
-1. **Anemic Domain Model（貧血ドメインモデル）** は最も蔓延するアンチパターン。エンティティが「データの入れ物」に成り下がり、ビジネスロジックが Application Service や Service クラスに散乱する。
-2. **Primitive Obsession（プリミティブ執着）** は見えにくいが致命的。`string email` や `decimal amount` は型システムでドメインルールを表現できず、バグの温床となる。
-3. **God Aggregate（神様集約）** はトランザクション境界の設計ミス。1つの集約に過多なデータを持たせると、ロックの競合とパフォーマンス劣化が同時に発生する。
-4. **Repository をクエリサービス扱い** すると、リポジトリにクエリメソッドが無制限増殖する。CQRS と Read Model を組み合わせ、書き込み用と読み取り用を分離する。
-5. **ビジネスロジックの流出（Application Service / Domain Event への混入）** は、ドメイン層のテスト可能性を破壊し、コードベース全体を脆くする。
+DDDのアンチパターンは「戦略的」「戦術的」「アーキテクチャ」の3カテゴリに分類され、多くは知識不足ではなく「分かっているつもり」の実装ギャップから生まれます。最も危険な組み合わせは「貧血ドメインモデル ＋ 巨大集約 ＋ Bounded Context無視」で、一度定着すると修正コストが指数関数的に増加します。本章のチェックリスト30項目を使ってコードレビューに組み込むことで、設計の劣化を早期に発見できます。
 
 ---
 
-## はじめに — アンチパターンを学ぶ価値
+## 1. なぜアンチパターンを学ぶか
 
-DDD（Domain-Driven Design）は、Eric Evans の著書『Domain-Driven Design: Tackling Complexity in the Heart of Software』（2003年）によって体系化されたソフトウェア設計哲学です。その後 Vaughn Vernon の『Implementing Domain-Driven Design』や『Domain-Driven Design Distilled』によって実践レベルに落とし込まれました。
+### 知識と実装の乖離という根本問題
 
-しかし、20年以上の歴史を持つ今日でも、DDDを採用したプロジェクトの多くが「名前だけDDD」の状態に陥ります。Entity や Repository というクラス名が付いているのに、実態はトランザクションスクリプトのコードが並ぶ——これがDDDの「形だけ真似た」失敗例の典型です。
+「DDDの本を3冊読んだ」「研修を受けた」「チーム内で勉強会を開いた」——それにもかかわらず、実際のコードが美しくなかったという経験はないでしょうか。DDDに関する書籍や資料は豊富にあります。しかし、それらを読んで理解したとしても、実装がうまくいかないケースは非常に多くあります。
 
-アンチパターンを知ることは、正しいパターンを知ることと同じくらい重要です。本章では、現場で繰り返し観察される7つの主要アンチパターンと、その具体的な解消方法をC# .NET 9のコードとともに解説します。
+この乖離の根本原因は、DDDが「概念の集合」ではなく「判断基準の集合」だからです。エンティティとバリューオブジェクトの違いを教科書で学ぶことは難しくありません。しかし実際のコードを書く場面で「この`Address`はエンティティか、バリューオブジェクトか」という判断を正確に下せるかどうかは別の話です。
+
+知識として分かっていても実装に落とし込めない理由には、主に以下の3つがあります。
+
+第一に、**既存コードベースの慣性**です。チームがトランザクションスクリプトやAnemic Domain Modelに慣れ親しんでいると、DDDの概念を知っていても、無意識のうちに旧来のパターンで書いてしまいます。「ここはとりあえずServiceに書いておこう」という一文が積み重なって、気づけば全ロジックがServiceクラスに集中しているというのはよくある話です。
+
+第二に、**締め切りと品質のトレードオフ**です。正しい設計を追求したくても、スプリントの締め切りが迫ると「後でリファクタリングする」という先送りが生まれます。この先送りが積み重なると、技術的負債が指数関数的に増加します。
+
+第三に、**フィードバックループの遅さ**です。設計の良し悪しは、書いた直後にはなかなか判断できません。数ヶ月後に機能追加や変更が困難になったときに初めて「あの設計は間違っていた」と気づくことが多いのです。
+
+### アンチパターンを知ることが設計力の証
+
+優れたエンジニアは「正しい答え」を知っているだけでなく、「よくある間違い」を体系的に把握しています。医師が診断を下す際にまず鑑別診断を行うように、エンジニアも設計の問題を診断する「デバッグ型思考」を持つことが重要です。
+
+アンチパターンを学ぶことには以下のメリットがあります。まず、コードレビューの際に具体的な指摘ができるようになります。「なんとなく気持ち悪い」ではなく「これはAnemic Domain Modelです。OrderConfirm()メソッドをOrderServiceではなくOrderエンティティに移動してください」と言える。次に、設計議論で共通言語として使えます。チームメンバーと「これはGOD Aggregateになっていないか?」と話し合えるようになります。さらに、予防的な設計判断ができるようになります。「ここでやりたいことはNano-servicesにつながりやすいパターンだ」と事前に察知できます。
+
+### アンチパターンのカテゴリ分類
+
+本章では、DDDアンチパターンを以下の3カテゴリに分類して解説します。
+
+**戦略的アンチパターン**: Bounded Contextの設計やUbiquitous Languageの確立に関する問題。プロジェクト全体の構造に影響し、修正コストが最も高いカテゴリです。
+
+**戦術的アンチパターン**: エンティティ、集約、リポジトリ、ドメインサービスなど、個々の設計要素に関する問題。戦略的な設計が正しくても、戦術的なアンチパターンが存在するとコードの品質は低下します。
+
+**アーキテクチャアンチパターン**: レイヤー間の依存関係や責務分離に関する問題。これらは往々にして戦術的アンチパターンと連鎖して発生します。
 
 ---
 
-## 1. Anemic Domain Model（貧血ドメインモデル）
+## 2. 戦略的アンチパターン
 
-### 1.1 Martin Fowlerの定義と批判
+### 2.1 Bounded Context 無視（Big Ball of Mud）
 
-Martin Fowlerは2003年のブログ記事「AnemicDomainModel」で、このアンチパターンを次のように定義しました。
+#### 症状
 
-> 「貧血ドメインモデルとは、ドメインオブジェクトがほとんどすべてのビジネスロジックを持たず、getter/setterのみで構成されているものだ。それはオブジェクト指向の基本原則——データとふるまいを一体として持つ——に反している。」
+最も深刻な戦略的アンチパターンは、Bounded Contextを設けないことです。この状態のシステムは「Big Ball of Mud（泥の大きな塊）」とも呼ばれます。具体的な症状としては、注文（Order）・顧客（Customer）・在庫（Inventory）・決済（Payment）が同一の名前空間に混在し、それぞれのドメイン概念が互いに強く依存しているという状態です。
 
-Fowlerはさらに続けます。「これはアンチパターンであり、根本的なオブジェクト指向設計の違反だ。にもかかわらず、この手法は広く普及している。それは、一見モデルのように見えるからだ——クラスに名前が付けられ、ドメインエンティティのリレーションも存在する。しかし実際にそのオブジェクトで何かしようとすると、すべてのビジネスロジックはServiceクラスの中にしかない。」
-
-### 1.2 症状チェックリスト（8項目）
-
-以下の項目に多く当てはまるほど、貧血ドメインモデルの疑いが濃くなります。
-
-| # | 症状 | 例 |
-|---|------|----|
-| 1 | エンティティのメソッドがほとんどすべて getter/setter | `order.Status = OrderStatus.Confirmed` |
-| 2 | ビジネスルールの検証がService層に集中している | `OrderService.ValidateCanShip(order)` |
-| 3 | エンティティのプロパティがすべて `public set` | `public decimal TotalAmount { get; set; }` |
-| 4 | ドメインオブジェクトを単体でテストできない（Serviceと一体でしかテストできない） | 単体テストがDBに依存する |
-| 5 | 同じビジネスルールが複数のServiceに重複している | 「注文確認できる条件」が3箇所に散在 |
-| 6 | Application ServiceのメソッドがSQLのようにステップを並べているだけ | `order.Status = X; order.UpdatedAt = now; ...` |
-| 7 | エンティティのフィールドが増えるたびにServiceのロジックも増える | カラム追加のたびにService変更 |
-| 8 | 集約の不変条件（invariant）を文書化できない | 「Orderが有効な状態とは何か」が定義不能 |
-
-### 1.3 Before — 貧血ドメインモデルの例
+例えば、`Order`クラスが`Customer`の会員ランクを直接参照し、在庫の引き当てロジックを内包し、決済処理まで行うようなコードが典型例です。一見「全部一箇所にある」ので分かりやすく見えますが、これは設計の失敗を意味します。
 
 ```csharp
-// ❌ Before: Order は getter/setter の入れ物に過ぎない
-namespace ECommerce.Domain;
-
+// Bad: 全ドメインが混在した巨大クラス
 public class Order
 {
-    public Guid Id { get; set; }
-    public Guid CustomerId { get; set; }
-    public OrderStatus Status { get; set; }
+    public int Id { get; set; }
+    public Customer Customer { get; set; }          // 顧客ドメインへの直接依存
+    public List<InventoryItem> Items { get; set; }  // 在庫ドメインへの直接依存
+    public PaymentInfo Payment { get; set; }         // 決済ドメインへの直接依存
     public decimal TotalAmount { get; set; }
-    public List<OrderItem> Items { get; set; } = [];
+
+    // 在庫チェックが注文クラスに存在
+    public bool CheckInventory()
+    {
+        foreach (var item in Items)
+        {
+            if (item.AvailableQuantity < item.OrderedQuantity)
+                return false;
+        }
+        return true;
+    }
+
+    // 会員ランクに基づく割引計算が注文クラスに存在
+    public decimal CalculateDiscount()
+    {
+        if (Customer.MemberRank == "Gold")
+            return TotalAmount * 0.1m;
+        if (Customer.MemberRank == "Platinum")
+            return TotalAmount * 0.15m;
+        return 0;
+    }
+
+    // 決済処理が注文クラスに存在
+    public async Task<bool> ProcessPayment(string cardNumber, string cvv)
+    {
+        Payment = new PaymentInfo { CardNumber = cardNumber, Cvv = cvv };
+        return true;
+    }
+}
+```
+
+#### 発生メカニズム
+
+なぜBig Ball of Mudは発生するのでしょうか。多くの場合、プロジェクト初期は「シンプルに始めよう」という意図があります。最初のスプリントでは機能が少なく、モデルが混在していても問題になりません。しかし機能追加が続くにつれ、既存の構造に便乗する形で新しいロジックが追加されていきます。
+
+技術的負債の加速メカニズムは以下の通りです。まず、最初の混在が小さな問題として見過ごされます。次に、その構造を前提に新機能が追加されます。テストを書くとすべての依存が必要になり、テストが書きにくくなります。テストが少ないとリファクタリングが怖くなります。リファクタリングできないので問題が蓄積します。結果として、変更コストが指数関数的に上昇します。
+
+```mermaid
+graph TB
+    subgraph "Before: Big Ball of Mud"
+        O[Order] --> C[Customer]
+        O --> I[Inventory]
+        O --> P[Payment]
+        O --> S[Shipping]
+        C --> P
+        I --> S
+        P --> S
+        I --> C
+    end
+
+    subgraph "After: Bounded Context 分離"
+        subgraph "注文 BC"
+            OBC[Order]
+            OL[OrderLine]
+        end
+        subgraph "顧客 BC"
+            CBC[Customer]
+            CG[CustomerGrade]
+        end
+        subgraph "在庫 BC"
+            IBC[InventoryItem]
+            IR[InventoryReservation]
+        end
+        subgraph "決済 BC"
+            PBC[Payment]
+            PT[PaymentTransaction]
+        end
+        OBC -- "CustomerId (ID参照)" --> CBC
+        OBC -- "OrderPlaced Event" --> IBC
+        OBC -- "OrderPlaced Event" --> PBC
+    end
+```
+
+#### Before/After C# コード（完全実装）
+
+```csharp
+// Good: 注文 Bounded Context
+namespace OrderManagement.Domain
+{
+    public class Order : AggregateRoot
+    {
+        public OrderId Id { get; private set; }
+        public CustomerId CustomerId { get; private set; }  // ID参照のみ
+        public OrderStatus Status { get; private set; }
+        private readonly List<OrderLine> _lines = new();
+        public IReadOnlyCollection<OrderLine> Lines => _lines.AsReadOnly();
+        public Money TotalAmount { get; private set; }
+
+        private Order() { }
+
+        public static Order Place(
+            CustomerId customerId,
+            IEnumerable<OrderLineRequest> lineRequests)
+        {
+            var order = new Order
+            {
+                Id = OrderId.New(),
+                CustomerId = customerId,
+                Status = OrderStatus.Placed,
+                TotalAmount = Money.Zero("JPY")
+            };
+
+            foreach (var req in lineRequests)
+            {
+                order.AddLine(req.ProductId, req.Quantity, req.UnitPrice);
+            }
+
+            order.RecordEvent(new OrderPlacedEvent(order.Id, customerId, order.TotalAmount));
+            return order;
+        }
+
+        private void AddLine(ProductId productId, int quantity, Money unitPrice)
+        {
+            var line = OrderLine.Create(productId, quantity, unitPrice);
+            _lines.Add(line);
+            TotalAmount = TotalAmount.Add(line.LineTotal);
+        }
+
+        public void Confirm()
+        {
+            if (Status != OrderStatus.Placed)
+                throw new DomainException($"ステータスが{Status}の注文は確定できません。");
+
+            Status = OrderStatus.Confirmed;
+            RecordEvent(new OrderConfirmedEvent(Id, CustomerId));
+        }
+    }
+}
+
+// Good: Anti-Corruption Layer (ACL)
+namespace OrderManagement.Infrastructure.Acl
+{
+    public class CustomerDiscountAcl : ICustomerDiscountPolicy
+    {
+        private readonly ICustomerServiceClient _customerServiceClient;
+
+        public CustomerDiscountAcl(ICustomerServiceClient client)
+        {
+            _customerServiceClient = client;
+        }
+
+        public async Task<DiscountRate> GetDiscountRateAsync(CustomerId customerId)
+        {
+            // 外部の顧客サービスのモデル（CustomerDto）を
+            // 注文コンテキストのモデル（DiscountRate）に変換する
+            var customerDto = await _customerServiceClient.GetCustomerAsync(customerId.Value);
+            return TranslateToDiscountRate(customerDto.MemberRank);
+        }
+
+        private DiscountRate TranslateToDiscountRate(string memberRank) =>
+            memberRank switch
+            {
+                "Gold" => new DiscountRate(0.10m),
+                "Platinum" => new DiscountRate(0.15m),
+                _ => DiscountRate.None
+            };
+    }
+}
+```
+
+#### 修正方法
+
+修正のステップは以下の通りです。まずEvent Stormingを使ってビジネスイベントを洗い出し、自然なBounded Contextの境界を発見します。次にContext Mapを描いて、BCの間の関係（Upstream/Downstream, Partnership, ACL等）を明確にします。最後に、BC間の通信はID参照またはDomain Eventに限定し、直接オブジェクト参照を排除します。
+
+---
+
+### 2.2 あいまいな Ubiquitous Language
+
+#### 症状
+
+「user」「account」「data」「item」「info」「detail」「type」「status」——これらの単語があなたのコードに溢れていませんか？これらは意味が広すぎて、文脈によって全く異なるものを指します。例えば「user」は「顧客」「管理者」「オペレーター」のどれでしょうか？「item」は「注文明細」「在庫品目」「カタログエントリー」のどれでしょうか？
+
+```csharp
+// Bad: あいまいな言語で書かれたコード
+public class DataManager
+{
+    public UserInfo GetUser(int id) { /* ... */ }
+    public void UpdateUserData(UserInfo info) { /* ... */ }
+    public List<ItemDetail> GetItems(int userId) { /* ... */ }
+    public bool ProcessItem(ItemDetail item, UserInfo user) { /* ... */ }
+    public void SaveData(object data) { /* ... */ }
+}
+```
+
+このコードを読んでも、ビジネスの何をしているのか全く分かりません。`ProcessItem`は何を処理しているのか？`SaveData`は何を保存するのか？ドメインエキスパートにこのコードを見せても、自分たちのビジネスを表現しているとは到底思えないでしょう。
+
+#### 発生メカニズム
+
+あいまいな言語が生まれる最大の原因は、**技術者とビジネス側の対話不足**です。エンジニアが要件書だけを見てコードを書くと、ビジネスの文脈が失われます。「注文明細」を`OrderLine`と書くべきところを`Item`と書いてしまうのは、ドメインエキスパートとの対話がないからです。
+
+もう一つの原因は、**ERDから始まる設計**です。データベースのテーブル設計から始めると、テーブル名がそのままクラス名になりがちです。`T_USER_MST`から始まった設計は`UserMst`クラスになり、ドメインの意図が完全に失われます。
+
+#### Before/After: ユビキタス言語の適用
+
+```csharp
+// Bad: あいまいな用語
+public class ItemService
+{
+    public Item GetItem(int id) { /* ... */ }
+    public void UpdateItem(Item item) { /* ... */ }
+    public List<Item> GetUserItems(int userId) { /* ... */ }
+}
+
+// Good: ユビキタス言語に基づく明確な名称（注文管理コンテキスト）
+public class OrderLineService
+{
+    public OrderLine GetOrderLine(OrderLineId id) { /* ... */ }
+    public void UpdateOrderLineQuantity(OrderLineId id, Quantity newQuantity) { /* ... */ }
+    public IReadOnlyList<OrderLine> GetOrderLinesForOrder(OrderId orderId) { /* ... */ }
+}
+
+// Good: カタログ管理コンテキスト
+public class CatalogEntryService
+{
+    public CatalogEntry GetCatalogEntry(CatalogEntryId id) { /* ... */ }
+    public void UpdateCatalogEntryPrice(CatalogEntryId id, Money newPrice) { /* ... */ }
+    public IReadOnlyList<CatalogEntry> GetCatalogEntriesForCategory(CategoryId id) { /* ... */ }
+}
+```
+
+#### 修正方法
+
+Event Stormingワークショップを開催し、ドメインエキスパートと「オレンジ付箋（ドメインイベント）」を貼り出す作業をします。この作業を通じて、ビジネス側が実際に使っている言葉を発見できます。その言葉をそのままコードに反映するのが原則です。
+
+用語集（Glossary）を作成し、以下の形式でチームの共通理解を記録します。
+
+| 用語 | コンテキスト | 定義 | 使ってはいけない同義語 |
+|------|------------|------|-------------------|
+| 受注 (Order) | 注文管理 | 顧客からの購買意図の確定記録 | 注文書、買い注文 |
+| 注文明細 (OrderLine) | 注文管理 | 受注に含まれる商品1品目の記録 | アイテム、品目、Item |
+| 顧客 (Customer) | 顧客管理 | 過去に購買実績のある取引先 | ユーザー、User、得意先 |
+| 商品 (Product) | カタログ管理 | 販売対象として登録された品目 | 商材、アイテム、品物 |
+
+ドメインエキスパートが「それはうちではXと呼ぶ」と言ったとき、そのXをそのままコードに使う勇気が必要です。慣れ親しんだ「User」を「Customer」に変えるのは抵抗感がありますが、その抵抗を乗り越えることがDDDの第一歩です。
+
+---
+
+### 2.3 事前過設計（BDUF: Big Design Up Front）
+
+#### 症状
+
+「完璧なドメインモデルを設計してから実装を始めよう」「集約の境界が決まるまでコードは書けない」「全てのBounded Contextのコンテキストマップが完成してからスプリントを開始しよう」——このような姿勢がBDUFアンチパターンです。
+
+設計会議が何週間も続き、ホワイトボードにはUML図が何枚も描かれているのに、動くコードが一行も存在しない状態です。ドメインの複雑さに直面すると、人は「もっと考えれば答えが出るはず」という罠にはまりがちです。
+
+BDUF症状の具体的な兆候:
+
+- スプリント1が始まって2週間が経過しているのにコードが0行
+- 全てのユースケースのクラス図がある状態で実装に入っていない
+- 「この設計で良いか確認が取れないと進められない」という発言が繰り返される
+- ドメインエキスパートとの打ち合わせが設計レビュー中心で、動くものを一緒に確認する機会がない
+
+#### DDDの反復的なモデリングとの違い
+
+DDDは「完璧なモデルを最初に設計する」手法ではありません。DDDは「モデルを実装を通じて継続的に発見・改善する」手法です。Eric Evansは「ドメインモデルは生き物であり、理解が深まるにつれて進化する」と述べています。
+
+「Designing vs Learning」の違いを理解することが重要です。BDUFは「Designing（設計する）」モードで、正解が事前に分かるという前提があります。DDDは「Learning（学ぶ）」モードで、実装と対話を通じてドメインを発見するという前提があります。
+
+```mermaid
+graph LR
+    subgraph "BDUF（避けるべきアプローチ）"
+        B1[要件定義] --> B2[全ドメイン分析]
+        B2 --> B3[完全なContext Map]
+        B3 --> B4[全集約の設計]
+        B4 --> B5[実装開始]
+        B5 --> B6[現実との乖離発見]
+        B6 --> B7[全設計の見直し]
+    end
+
+    subgraph "DDDの反復アプローチ（推奨）"
+        D1[最重要UC選定] --> D2[Walking Skeleton実装]
+        D2 --> D3[DEと動作確認]
+        D3 --> D4[モデル改善]
+        D4 --> D5[次のUC追加]
+        D5 --> D3
+    end
+```
+
+#### 修正方法: Walking Skeleton + 継続的リファクタリング
+
+Walking Skeletonとは、システムの全レイヤーを貫く最小限の機能実装です。最初はドメインモデルが不完全でも構いません。
+
+```csharp
+// Walking Skeleton: 最初は不完全でいい（Week 1）
+// 目的は「動くもの」を作ること
+public class OrderApplicationService
+{
+    public async Task<OrderId> PlaceOrderAsync(PlaceOrderCommand command)
+    {
+        var order = new Order(command.CustomerId, command.Items);
+        await _orderRepository.SaveAsync(order);
+        return order.Id;
+    }
+}
+
+// Week 4: ドメインエキスパートとのデモを経て得た知見を反映
+// 「在庫確認は注文受付の前に行う業務フローになっている」
+public class OrderApplicationService
+{
+    public async Task<OrderId> PlaceOrderAsync(PlaceOrderCommand command)
+    {
+        var availabilityCheck = await _inventoryService.CheckAvailabilityAsync(command.Items);
+        if (!availabilityCheck.IsAvailable)
+            throw new InsufficientInventoryException(availabilityCheck.UnavailableItems);
+
+        var order = Order.Place(command.CustomerId, command.Items, availabilityCheck);
+        await _orderRepository.SaveAsync(order);
+        return order.Id;
+    }
+}
+```
+
+フェーズ1（Week 1-2）: 最も重要なユースケース1つだけを全レイヤーで貫通させて動かします。フェーズ2（Week 3-4）: 実装と対話から得た知見でモデルを修正します。フェーズ3（Week 5+）: 新しい機能を追加しながら継続的にリファクタリングします。
+
+---
+
+### 2.4 過細粒度サービス（Nano-services）
+
+#### 症状
+
+マイクロサービスアーキテクチャを採用したプロジェクトで、1つのユースケースを完了するために5つ以上のサービス呼び出しが連鎖するようになった状態をNano-servicesといいます。
+
+```
+OrderService → ProductService → InventoryService → PricingService
+→ DiscountService → TaxService → PaymentService
+```
+
+各サービスへの呼び出しがネットワーク越しになるため、レイテンシが積み重なります。7つのサービスそれぞれが99.9%の可用性を持つとしても、連鎖全体の可用性は 0.999の7乗 ≒ 99.3% にまで低下します。
+
+#### 発生メカニズム
+
+Nano-servicesが発生する主な原因は、**Bounded Contextを無視した技術的分割**です。マイクロサービスは「スケーリングの単位」「デプロイの単位」「チームの単位」として分割すべきですが、Nano-servicesは「クラスの単位」「機能の単位」で分割してしまっています。
+
+```mermaid
+graph TB
+    subgraph "Nano-services の連鎖（悪い例）"
+        A[Client] --> B[OrderService]
+        B -- HTTP --> C[ProductService]
+        B -- HTTP --> D[InventoryService]
+        B -- HTTP --> E[PricingService]
+        E -- HTTP --> F[DiscountService]
+        E -- HTTP --> G[TaxService]
+        B -- HTTP --> H[PaymentService]
+    end
+
+    subgraph "適切な粒度（良い例）"
+        X[Client] --> Y["注文BC\nOrderService\n(注文+価格+割引+税)"]
+        X --> Z["決済BC\nPaymentService"]
+        Y -- "非同期Event" --> Z
+        Y -- "非同期Event" --> W["在庫BC\nInventoryService"]
+    end
+```
+
+#### 修正方法
+
+```csharp
+// Bad: Nano-services による連鎖（1ユースケースに6回のネットワーク呼び出し）
+public class OrderConfirmationOrchestrator
+{
+    public async Task ConfirmOrderAsync(Guid orderId)
+    {
+        var order = await _orderClient.GetOrderAsync(orderId);           // HTTP 1
+        var products = await _productClient.GetProductsAsync(           // HTTP 2
+            order.ProductIds);
+        var inventory = await _inventoryClient.CheckAsync(order.ProductIds); // HTTP 3
+        var basePrice = await _pricingClient.CalculateAsync(order);    // HTTP 4
+        var discount = await _discountClient.GetDiscountAsync(          // HTTP 5
+            order.CustomerId);
+        var finalPrice = await _taxClient.ApplyTaxAsync(               // HTTP 6
+            basePrice - discount);
+    }
+}
+
+// Good: 注文BC内でまとめて処理（ローカル呼び出し）
+public class OrderApplicationService
+{
+    public async Task ConfirmOrderAsync(OrderId orderId)
+    {
+        // BC内のローカルリポジトリから取得（ネットワーク不要）
+        var order = await _orderRepository.FindByIdAsync(orderId);
+
+        // BC内のドメインサービスで価格計算（ネットワーク不要）
+        var pricingPolicy = await _pricingPolicyRepository.GetCurrentPolicyAsync();
+        order.Confirm(pricingPolicy);
+
+        await _orderRepository.SaveAsync(order);
+
+        // 在庫BC・決済BCへは非同期イベントで通知（連鎖しない）
+        foreach (var domainEvent in order.DomainEvents)
+            await _eventBus.PublishAsync(domainEvent);
+    }
+}
+```
+
+---
+
+## 3. 戦術的アンチパターン
+
+### 3.1 Anemic Domain Model（貧血ドメインモデル）
+
+#### Martin Fowlerが命名した最重要アンチパターン
+
+Martin Fowlerが2003年に命名したAnemic Domain Modelは、DDDの世界で最も広く議論されるアンチパターンです。なぜ「最重要」かというと、**発見が困難**で**被害が甚大**だからです。表面上は「オブジェクト指向っぽいコード」に見えるため、気づかないまま運用され続けることが多いのです。
+
+クラス図を見ると、きちんとOrder・Customer・Productというクラスが存在します。しかしそのクラスの中身はgetterとsetterだけで、全てのビジネスロジックがXxxServiceクラスに書かれています。この状態は、オブジェクト指向の恩恵（カプセル化・凝集性・ポリモーフィズム）をほとんど得られていません。手続き型プログラミングをクラスで書いているのと本質的に同じです。
+
+```mermaid
+classDiagram
+    class Order_Bad {
+        +int Id
+        +string Status
+        +decimal TotalAmount
+        +List Items
+        +string CustomerId
+        +getStatus()
+        +setStatus(s)
+        +getTotalAmount()
+        +setTotalAmount(d)
+    }
+
+    class OrderService_Bad {
+        +PlaceOrder()
+        +ConfirmOrder()
+        +CancelOrder()
+        +ApplyDiscount()
+        +CalculateShipping()
+        +ValidateOrder()
+    }
+
+    class Order_Good {
+        -OrderId id
+        -OrderStatus status
+        -Money totalAmount
+        -List lines
+        +Place() Order
+        +Confirm()
+        +Cancel()
+        +ApplyDiscount()
+    }
+
+    class OrderApplicationService_Good {
+        +PlaceOrderAsync()
+        +ConfirmOrderAsync()
+    }
+
+    OrderService_Bad --> Order_Bad : 全ロジックを保持
+    OrderApplicationService_Good --> Order_Good : オーケストレーションのみ
+```
+
+#### 発生メカニズム
+
+Anemic Domain Modelが発生する主な要因は2つあります。第一に、**トランザクションスクリプトの残滓**です。多くのエンジニアが最初に学ぶプログラミングスタイルはトランザクションスクリプト（手順を上から下に書く手続き型）です。このスタイルに慣れると、「データを取ってきて、処理して、保存する」という流れが自然で、データクラスと処理クラスを分けることが「整理されている」と感じられます。第二に、**ORMの使い方の問題**です。EFCoreでエンティティを定義するとき、デフォルトでpublicなプロパティとsetterを持つPOCOクラスを作りがちです。そのまま放置すると、全プロパティがpublicなsetterを持つ「データバッグ」になります。
+
+#### Beforeコード（貧血モデル・約200行）
+
+```csharp
+// Bad: 貧血ドメインモデル（全ロジックがServiceにある）
+public class Order
+{
+    public int Id { get; set; }
+    public string Status { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string CustomerId { get; set; }
+    public List<OrderItem> Items { get; set; } = new();
     public DateTime CreatedAt { get; set; }
-    public DateTime? ShippedAt { get; set; }
-    public string? CancellationReason { get; set; }
+    public string CancellationReason { get; set; }
+    public DateTime? CancelledAt { get; set; }
+    public decimal DiscountAmount { get; set; }
+    public string ShippingAddress { get; set; }
+    // データのみ。ビジネスロジックは0行
 }
 
 public class OrderItem
 {
-    public Guid Id { get; set; }
-    public Guid ProductId { get; set; }
+    public int Id { get; set; }
+    public int OrderId { get; set; }
+    public string ProductId { get; set; }
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
+    public decimal LineTotal { get; set; }
 }
 
-public enum OrderStatus { Pending, Confirmed, Shipped, Cancelled }
-```
-
-```csharp
-// ❌ Before: ビジネスロジックが Application Service に漏出している
-namespace ECommerce.Application;
-
-public class OrderService(
-    IOrderRepository orderRepository,
-    IProductRepository productRepository,
-    IEventPublisher eventPublisher)
+// 全ビジネスロジックがServiceに集中（1000行超になりがち）
+public class OrderService
 {
-    public async Task ConfirmOrderAsync(Guid orderId)
+    private readonly IOrderRepository _orderRepository;
+    private readonly IInventoryRepository _inventoryRepository;
+    private readonly IEmailService _emailService;
+
+    public async Task<int> PlaceOrderAsync(PlaceOrderRequest request)
     {
-        var order = await orderRepository.FindByIdAsync(orderId)
-            ?? throw new NotFoundException(orderId);
+        // バリデーションロジックがService内に
+        if (request.Items == null || !request.Items.Any())
+            throw new ArgumentException("注文明細が空です");
 
-        // ビジネスルールが Application Service に散在
-        if (order.Status != OrderStatus.Pending)
-            throw new InvalidOperationException("保留中の注文のみ確認できます");
+        var order = new Order
+        {
+            Status = "Placed",
+            CustomerId = request.CustomerId,
+            CreatedAt = DateTime.UtcNow,
+            ShippingAddress = request.ShippingAddress
+        };
 
-        if (order.Items.Count == 0)
-            throw new InvalidOperationException("アイテムが空の注文は確認できません");
+        decimal total = 0;
+        foreach (var itemReq in request.Items)
+        {
+            // 価格計算ロジックがService内に（Entityに属するはず）
+            var lineTotal = itemReq.Quantity * itemReq.UnitPrice;
+            order.Items.Add(new OrderItem
+            {
+                ProductId = itemReq.ProductId,
+                Quantity = itemReq.Quantity,
+                UnitPrice = itemReq.UnitPrice,
+                LineTotal = lineTotal
+            });
+            total += lineTotal;
+        }
+        order.TotalAmount = total;
 
-        if (order.TotalAmount <= 0)
-            throw new InvalidOperationException("合計金額が不正です");
+        await _orderRepository.SaveAsync(order);
+        return order.Id;
+    }
 
-        // 在庫チェックのロジックもここに
+    public async Task ConfirmOrderAsync(int orderId)
+    {
+        var order = await _orderRepository.FindByIdAsync(orderId);
+
+        // ステータス遷移ロジックがService内に（Entityに属するはず）
+        if (order.Status != "Placed")
+            throw new InvalidOperationException(
+                $"ステータスが{order.Status}の注文は確定できません");
+
+        // 在庫チェックロジックがService内に
         foreach (var item in order.Items)
         {
-            var product = await productRepository.FindByIdAsync(item.ProductId)
-                ?? throw new NotFoundException(item.ProductId);
-
-            if (product.StockQuantity < item.Quantity)
-                throw new InvalidOperationException(
-                    $"商品 {product.Name} の在庫が不足しています");
+            var inventory = await _inventoryRepository
+                .FindByProductIdAsync(item.ProductId);
+            if (inventory.AvailableQuantity < item.Quantity)
+                throw new InsufficientInventoryException(item.ProductId);
         }
 
-        // 状態更新がベタ書き
-        order.Status = OrderStatus.Confirmed;
-
-        await orderRepository.SaveAsync(order);
-        await eventPublisher.PublishAsync(new OrderConfirmedEvent(order.Id));
+        order.Status = "Confirmed";  // ステータスを直接書き換え
+        await _orderRepository.SaveAsync(order);
+        await _emailService.SendOrderConfirmationAsync(order.CustomerId, order.Id);
     }
 
-    public async Task CancelOrderAsync(Guid orderId, string reason)
+    public async Task CancelOrderAsync(int orderId, string reason)
     {
-        var order = await orderRepository.FindByIdAsync(orderId)
-            ?? throw new NotFoundException(orderId);
+        var order = await _orderRepository.FindByIdAsync(orderId);
 
-        // 同じルールチェックが再実装されている
-        if (order.Status == OrderStatus.Shipped)
-            throw new InvalidOperationException("出荷済みの注文はキャンセルできません");
+        // キャンセルロジックがService内に（Entityに属するはず）
+        if (order.Status == "Shipped" || order.Status == "Delivered")
+            throw new InvalidOperationException("発送済みの注文はキャンセルできません");
 
-        if (order.Status == OrderStatus.Cancelled)
-            throw new InvalidOperationException("すでにキャンセル済みです");
-
-        order.Status = OrderStatus.Cancelled;
+        order.Status = "Cancelled";
         order.CancellationReason = reason;
-
-        await orderRepository.SaveAsync(order);
+        order.CancelledAt = DateTime.UtcNow;
+        await _orderRepository.SaveAsync(order);
     }
 }
 ```
 
-### 1.4 After — ビジネスロジックをドメインに戻す
+#### Afterコード（リッチモデル・約200行）
 
 ```csharp
-// ✅ After: Order がビジネスロジックを持つリッチドメインモデル
-namespace ECommerce.Domain;
-
-public sealed class Order
+// Good: リッチドメインモデル（ビジネスロジックがEntityに）
+public class Order : AggregateRoot<OrderId>
 {
-    private readonly List<OrderItem> _items = [];
+    private readonly List<OrderLine> _lines = new();
+    private readonly List<IDomainEvent> _domainEvents = new();
 
-    // コンストラクタは private — ファクトリメソッド経由で生成を強制
-    private Order(Guid id, CustomerId customerId)
-    {
-        Id = id;
-        CustomerId = customerId;
-        Status = OrderStatus.Pending;
-        CreatedAt = DateTime.UtcNow;
-    }
-
-    public Guid Id { get; }
-    public CustomerId CustomerId { get; }
+    public OrderId Id { get; private set; }
+    public CustomerId CustomerId { get; private set; }
     public OrderStatus Status { get; private set; }
-    public IReadOnlyList<OrderItem> Items => _items.AsReadOnly();
-    public Money TotalAmount => Money.Sum(_items.Select(i => i.SubTotal));
-    public DateTime CreatedAt { get; }
-    public DateTime? ShippedAt { get; private set; }
-    public string? CancellationReason { get; private set; }
+    public Money TotalAmount { get; private set; }
+    public ShippingAddress ShippingAddress { get; private set; }
+    public CancellationInfo? CancellationInfo { get; private set; }
+    public IReadOnlyCollection<OrderLine> Lines => _lines.AsReadOnly();
+    public IReadOnlyCollection<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
 
-    // ドメインイベントはエンティティ自身が発行
-    private readonly List<IDomainEvent> _domainEvents = [];
-    public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+    private Order() { } // EFCore用
 
-    // ファクトリメソッド — 生成時の不変条件を保証
-    public static Order Create(CustomerId customerId)
+    // ファクトリメソッド: 生成ロジックをEntityが持つ
+    public static Order Place(
+        CustomerId customerId,
+        IEnumerable<OrderLineRequest> lineRequests,
+        ShippingAddress shippingAddress)
     {
-        ArgumentNullException.ThrowIfNull(customerId);
-        return new Order(Guid.NewGuid(), customerId);
+        if (!lineRequests.Any())
+            throw new DomainException("注文明細が空の注文は受け付けられません。");
+
+        var order = new Order
+        {
+            Id = OrderId.New(),
+            CustomerId = customerId,
+            Status = OrderStatus.Placed,
+            ShippingAddress = shippingAddress,
+            TotalAmount = Money.Zero("JPY")
+        };
+
+        foreach (var req in lineRequests)
+            order.AddLine(req.ProductId, req.Quantity, req.UnitPrice);
+
+        order._domainEvents.Add(
+            new OrderPlacedEvent(order.Id, customerId, order.TotalAmount));
+        return order;
     }
 
-    // アイテム追加 — ビジネスルールをメソッドに封じ込める
-    public void AddItem(ProductId productId, int quantity, Money unitPrice)
-    {
-        if (Status != OrderStatus.Pending)
-            throw new DomainException("保留中の注文にのみアイテムを追加できます");
-
-        if (quantity <= 0)
-            throw new DomainException("数量は1以上である必要があります");
-
-        var existingItem = _items.FirstOrDefault(i => i.ProductId == productId);
-        if (existingItem is not null)
-        {
-            existingItem.IncreaseQuantity(quantity);
-        }
-        else
-        {
-            _items.Add(OrderItem.Create(productId, quantity, unitPrice));
-        }
-    }
-
-    // 確認 — ルールがすべてドメインオブジェクト内に閉じている
+    // ステータス遷移ロジックをEntityが持つ（Tell, Don't Ask）
     public void Confirm()
     {
-        EnsureStatus(OrderStatus.Pending, "保留中の注文のみ確認できます");
-
-        if (_items.Count == 0)
-            throw new DomainException("アイテムが空の注文は確認できません");
-
-        if (TotalAmount <= Money.Zero)
-            throw new DomainException("合計金額が不正です");
+        if (Status != OrderStatus.Placed)
+            throw new DomainException(
+                $"ステータスが{Status.DisplayName}の注文は確定できません。");
 
         Status = OrderStatus.Confirmed;
-        _domainEvents.Add(new OrderConfirmedEvent(Id, CustomerId, TotalAmount));
+        _domainEvents.Add(new OrderConfirmedEvent(Id, CustomerId));
     }
 
-    // キャンセル — 不変条件の保護がメソッドに集約
-    public void Cancel(string reason)
+    // キャンセルロジックをEntityが持つ
+    public void Cancel(CancellationReason reason)
     {
-        if (Status == OrderStatus.Cancelled)
-            throw new DomainException("すでにキャンセル済みです");
-
-        EnsureNotStatus(OrderStatus.Shipped, "出荷済みの注文はキャンセルできません");
+        if (Status == OrderStatus.Shipped || Status == OrderStatus.Delivered)
+            throw new DomainException("発送済みまたは配達済みの注文はキャンセルできません。");
 
         Status = OrderStatus.Cancelled;
-        CancellationReason = reason;
-        _domainEvents.Add(new OrderCancelledEvent(Id, reason));
+        CancellationInfo = new CancellationInfo(reason, DateTime.UtcNow);
+        _domainEvents.Add(new OrderCancelledEvent(Id, CustomerId, reason));
     }
 
-    public void MarkAsShipped()
+    // 割引適用ロジックをEntityが持つ
+    public void ApplyDiscount(DiscountRate discountRate)
     {
-        EnsureStatus(OrderStatus.Confirmed, "確認済みの注文のみ出荷できます");
-        Status = OrderStatus.Shipped;
-        ShippedAt = DateTime.UtcNow;
-        _domainEvents.Add(new OrderShippedEvent(Id, ShippedAt.Value));
+        if (Status != OrderStatus.Placed)
+            throw new DomainException("確定前の注文にのみ割引を適用できます。");
+
+        TotalAmount = TotalAmount.ApplyDiscount(discountRate);
+        _domainEvents.Add(new OrderDiscountAppliedEvent(Id, discountRate));
     }
 
-    public void ClearDomainEvents() => _domainEvents.Clear();
-
-    private void EnsureStatus(OrderStatus expected, string message)
+    private void AddLine(ProductId productId, int quantity, Money unitPrice)
     {
-        if (Status != expected) throw new DomainException(message);
+        var existing = _lines.FirstOrDefault(l => l.ProductId == productId);
+        if (existing != null)
+            existing.IncreaseQuantity(quantity);
+        else
+            _lines.Add(OrderLine.Create(productId, quantity, unitPrice));
+        RecalculateTotal();
     }
 
-    private void EnsureNotStatus(OrderStatus forbidden, string message)
+    private void RecalculateTotal()
     {
-        if (Status == forbidden) throw new DomainException(message);
+        TotalAmount = _lines.Aggregate(
+            Money.Zero("JPY"), (sum, line) => sum.Add(line.LineTotal));
     }
 }
-```
 
-```csharp
-// ✅ After: Application Service はオーケストレーションのみ
-namespace ECommerce.Application;
-
-public class OrderApplicationService(
-    IOrderRepository orderRepository,
-    IProductRepository productRepository,
-    IUnitOfWork unitOfWork)
+// Application Serviceはオーケストレーションのみ（薄い層）
+public class OrderApplicationService
 {
+    private readonly IOrderRepository _orderRepository;
+
+    public async Task<OrderId> PlaceOrderAsync(PlaceOrderCommand command)
+    {
+        var order = Order.Place(
+            new CustomerId(command.CustomerId),
+            command.Items.Select(i => new OrderLineRequest(
+                new ProductId(i.ProductId),
+                i.Quantity,
+                new Money(i.UnitPrice, "JPY"))),
+            new ShippingAddress(command.ShippingAddress));
+
+        await _orderRepository.SaveAsync(order);
+        return order.Id;
+    }
+
     public async Task ConfirmOrderAsync(ConfirmOrderCommand command)
     {
-        var order = await orderRepository.FindByIdAsync(command.OrderId)
-            ?? throw new NotFoundException(command.OrderId);
-
-        // 在庫チェックはドメインサービスが担う（在庫はOrderの外にある）
-        await stockDomainService.EnsureSufficientStockAsync(order);
-
-        // ビジネスロジックはOrderオブジェクト自身が持つ
-        order.Confirm();
-
-        await unitOfWork.CommitAsync(); // ドメインイベントの発行もここで行う
+        var order = await _orderRepository.FindByIdAsync(new OrderId(command.OrderId));
+        order.Confirm();  // ドメインロジックはEntityに委ねる（1行）
+        await _orderRepository.SaveAsync(order);
     }
 }
 ```
 
-### 1.5 Transaction Script との違い
+#### 判定テスト
 
-「貧血ドメインモデル」と「トランザクションスクリプト」は混同されがちですが、本質的に異なります。
+以下の質問に5つ以上「はい」があれば、Anemic Domain Modelの疑いが強いです。
 
-```
-トランザクションスクリプト:
-  - そもそもドメインオブジェクトを作る意図がない
-  - ビジネスロジックをプロシージャ（メソッド）に直書きする
-  - シンプルなCRUDに適している
-  - Martin Fowlerも「シンプルな問題には良い選択」と述べている
+- クラスにpublicなsetterが10個以上あるか？
+- Serviceクラスが500行を超えているか？
+- Entityのメソッドがgetterとsetterだけか？
+- ステータス遷移ロジックがServiceにあるか？
+- 計算ロジック（合計金額・割引額等）がServiceにあるか？
+- バリデーションロジックがServiceにあるか？
+- Entityのインスタンス化にnewを直接Application Serviceで書いているか？
 
-貧血ドメインモデル:
-  - DDDを採用しようとして失敗した形
-  - ドメインオブジェクト（Entity/Aggregate）は存在するがデータだけ持つ
-  - ビジネスロジックがServiceに漏れ出している
-  - DDDの恩恵（カプセル化、不変条件の保護、テスタビリティ）を得られない
-  - 「最悪の両立」— DDDの複雑さとトランザクションスクリプトの限界を同時に抱える
-```
+---
 
-### 1.6 EF Core で起きやすい理由
+### 3.2 GOD Aggregate（神様集約）
 
-Entity Framework Core は既定では **public setter** を要求しがちです。これが貧血ドメインモデルを誘発します。
+#### 症状
+
+1000行を超えるOrderクラスに、注文・明細・配送・決済・割引・ポイント・クーポンなど全てのロジックが詰め込まれている状態です。Orderが「全てを知っている神様」になっています。コードを変更するたびに予期しない副作用が発生し、テストが複雑化します。
+
+GOD Aggregateは逆説的にも「Anemic Domain Modelを解消しようとした結果」として生まれることがあります。「ロジックをEntityに入れよう」と思ったものの、どこに入れるかを考えずに全てOrderに入れた結果、Order一点集中になります。
+
+#### なぜ発生するか
+
+集約の責務を絞ることは、実際には非常に難しい判断です。「注文と配送先は一緒に管理すべきでは?」「注文と決済情報は同じ集約に入れるべき?」という判断は、経験を積んでも迷うことがあります。「取り敢えず全部Orderに入れておけば整合性が保てる」という短絡的な判断がGOD Aggregateを生みます。
+
+#### Before/After C# コード
 
 ```csharp
-// ❌ EF Core の既定的な書き方（貧血モデルへの誘引）
+// Bad: GOD Aggregate（全てがOrderに）
 public class Order
 {
-    public Guid Id { get; set; }           // EFがIDをセットするため
-    public OrderStatus Status { get; set; } // EFが状態を復元するため
-    public List<OrderItem> Items { get; set; } = []; // ナビゲーションプロパティ
+    public int Id { get; private set; }
+    // 注文の基本情報
+    public string Status { get; private set; }
+    public decimal TotalAmount { get; private set; }
+    public List<OrderItem> Items { get; private set; }
+    // 配送情報（本来は別集約）
+    public string ShippingAddress { get; private set; }
+    public string TrackingNumber { get; private set; }
+    public DateTime? EstimatedDeliveryDate { get; private set; }
+    // 決済情報（本来は別集約）
+    public string PaymentMethod { get; private set; }
+    public bool IsPaid { get; private set; }
+    public DateTime? PaidAt { get; private set; }
+    // ポイント情報（本来は別集約）
+    public int EarnedPoints { get; private set; }
+    public int UsedPoints { get; private set; }
+    // クーポン情報（本来は別集約）
+    public string CouponCode { get; private set; }
+    public decimal CouponDiscountAmount { get; private set; }
+    // 1000行のメソッド群が続く...
 }
 
-// ✅ EF Core でもリッチドメインモデルを保つ — Owned Types + Shadow Properties
-public class OrderConfiguration : IEntityTypeConfiguration<Order>
+// Good: Vernon の4原則に基づく集約の分割
+// 原則1: 小さな集約にする（注文の核心のみ）
+public class Order : AggregateRoot<OrderId>
 {
-    public void Configure(EntityTypeBuilder<Order> builder)
+    public OrderId Id { get; private set; }
+    public CustomerId CustomerId { get; private set; }
+    public OrderStatus Status { get; private set; }
+    public Money TotalAmount { get; private set; }
+    private readonly List<OrderLine> _lines = new();
+    public IReadOnlyCollection<OrderLine> Lines => _lines.AsReadOnly();
+
+    public static Order Place(CustomerId customerId, IEnumerable<OrderLineRequest> lines)
     {
-        builder.HasKey(o => o.Id);
+        var order = new Order { Id = OrderId.New(), CustomerId = customerId,
+            Status = OrderStatus.Placed, TotalAmount = Money.Zero("JPY") };
+        foreach (var l in lines) order.AddLine(l.ProductId, l.Quantity, l.UnitPrice);
+        order.RecordEvent(new OrderPlacedEvent(order.Id, customerId, order.TotalAmount));
+        return order;
+    }
 
-        // private setter を持つプロパティはバッキングフィールドで対応
-        builder.Property(o => o.Status)
-            .HasConversion<string>()
-            .HasField("_status"); // private フィールドをバッキングとして使用
+    public void Confirm()
+    {
+        if (Status != OrderStatus.Placed)
+            throw new DomainException($"ステータスが{Status}の注文は確定できません。");
+        Status = OrderStatus.Confirmed;
+        RecordEvent(new OrderConfirmedEvent(Id, CustomerId));
+    }
+}
 
-        // コレクションのナビゲーションも private フィールド経由
-        builder.HasMany(o => o.Items)
-            .WithOne()
-            .HasForeignKey("OrderId");
+// 原則2: ID参照で別集約を参照（配送は独立した集約）
+public class Shipment : AggregateRoot<ShipmentId>
+{
+    public ShipmentId Id { get; private set; }
+    public OrderId OrderId { get; private set; }  // OrderへのID参照のみ
+    public ShippingAddress Destination { get; private set; }
+    public TrackingNumber? TrackingNumber { get; private set; }
+    public ShipmentStatus Status { get; private set; }
 
-        builder.Metadata
-            .FindNavigation(nameof(Order.Items))!
-            .SetPropertyAccessMode(PropertyAccessMode.Field);
+    public static Shipment CreateForOrder(OrderId orderId, ShippingAddress destination) =>
+        new Shipment { Id = ShipmentId.New(), OrderId = orderId,
+            Destination = destination, Status = ShipmentStatus.Preparing };
+
+    public void AssignTracking(TrackingNumber trackingNumber)
+    {
+        if (Status != ShipmentStatus.Preparing)
+            throw new DomainException("準備中でない配送に追跡番号を割り当てられません。");
+        TrackingNumber = trackingNumber;
+        Status = ShipmentStatus.InTransit;
+    }
+}
+
+// 原則3: 結果整合性を許容する
+// OrderConfirmedEvent → Shipmentが非同期で作成される
+public class CreateShipmentOnOrderConfirmedHandler
+    : IEventHandler<OrderConfirmedEvent>
+{
+    public async Task HandleAsync(OrderConfirmedEvent @event)
+    {
+        var shipment = Shipment.CreateForOrder(@event.OrderId, @event.ShippingAddress);
+        await _shipmentRepository.SaveAsync(shipment);
+    }
+}
+```
+
+#### Vernon の4原則
+
+1. **小さな集約にする**: 集約は必要最小限のデータと振る舞いだけを持つ。500行を超えたら分割を検討する。
+2. **ID参照で他の集約を参照する**: 直接オブジェクト参照ではなくIDで参照する。
+3. **結果整合性を使用する**: 異なる集約間はトランザクションを分け、最終的一貫性を許容する。
+4. **業務不変条件で境界を決める**: 「一緒に変わらなければならないもの」を同じ集約に入れる。
+
+---
+
+### 3.3 Aggregate をまたぐオブジェクト参照
+
+#### 症状と問題
+
+```csharp
+// Bad: 直接オブジェクト参照
+public class OrderLine
+{
+    public Product Product { get; set; }  // Productオブジェクトへの直接参照
+    public int Quantity { get; set; }
+}
+
+// 問題1: 遅延ロードでN+1問題が発生
+var orderLine = await _orderLineRepository.FindByIdAsync(lineId);
+var productName = orderLine.Product.Name;       // SQLが発行される
+var productPrice = orderLine.Product.CurrentPrice;  // さらにSQL発行
+
+// 問題2: 集約境界を越えてProductを変更できてしまう
+orderLine.Product.Price = 100;  // 本来は不可能なはずの操作
+```
+
+直接オブジェクト参照には3つの問題があります。まず**ロード戦略の問題**です。次に**集約境界の崩壊**です。OrderLineを通じてProductを変更できてしまいます。最後に**BC境界の侵食**です。注文コンテキストが商品コンテキストの内部構造に依存します。
+
+#### Before/After C# コード
+
+```csharp
+// Good: ID参照に変換 + 注文時点のスナップショット保持
+public class OrderLine : Entity<OrderLineId>
+{
+    public OrderLineId Id { get; private set; }
+    public ProductId ProductId { get; private set; }  // ID参照のみ
+    // 注文時点の商品情報をスナップショットとして保存
+    // （商品の価格・名前が後で変わっても注文時の情報を保持できる）
+    public ProductName ProductNameSnapshot { get; private set; }
+    public Money UnitPriceSnapshot { get; private set; }
+    public Quantity Quantity { get; private set; }
+
+    public Money LineTotal => UnitPriceSnapshot.Multiply(Quantity.Value);
+
+    public static OrderLine Create(
+        ProductId productId,
+        ProductName productName,
+        Money unitPrice,
+        Quantity quantity) =>
+        new OrderLine
+        {
+            Id = OrderLineId.New(),
+            ProductId = productId,
+            ProductNameSnapshot = productName,
+            UnitPriceSnapshot = unitPrice,
+            Quantity = quantity
+        };
+
+    public void IncreaseQuantity(int additionalQuantity)
+    {
+        if (additionalQuantity <= 0)
+            throw new DomainException("追加数量は1以上である必要があります。");
+        Quantity = new Quantity(Quantity.Value + additionalQuantity);
+    }
+}
+
+// 最新の商品情報が必要な場合はAPI Composition（ReadSide）
+public class OrderQueryService
+{
+    public async Task<OrderDetailDto> GetOrderDetailAsync(OrderId orderId)
+    {
+        var order = await _orderRepository.FindByIdAsync(orderId);
+        var productIds = order.Lines.Select(l => l.ProductId).Distinct().ToList();
+
+        // 必要な時だけ商品情報を取得（API Composition）
+        var products = await _productQueryClient.GetProductsByIdsAsync(productIds);
+        var productMap = products.ToDictionary(p => new ProductId(p.Id));
+
+        return new OrderDetailDto
+        {
+            OrderId = order.Id.Value,
+            Lines = order.Lines.Select(line =>
+            {
+                productMap.TryGetValue(line.ProductId, out var product);
+                return new OrderLineDto
+                {
+                    ProductId = line.ProductId.Value,
+                    ProductNameAtOrderTime = line.ProductNameSnapshot.Value,
+                    UnitPriceAtOrderTime = line.UnitPriceSnapshot.Amount,
+                    CurrentProductImageUrl = product?.ImageUrl,
+                    IsProductStillAvailable = product?.IsActive ?? false
+                };
+            }).ToList()
+        };
     }
 }
 ```
 
 ---
 
-## 2. Primitive Obsession（プリミティブ執着）
+### 3.4 Repository に Business Logic を書く
 
-### 2.1 string/int/decimal が意味を持てない問題
-
-プリミティブ型（`string`, `int`, `decimal`, `Guid`）は汎用の入れ物です。しかしビジネスドメインでは、「メールアドレスである文字列」と「商品名である文字列」は全く異なる意味を持ちます。型システムでこれを区別しなければ、コンパイラはバグを検出できません。
-
-```
-問題: decimal amount は何の金額か？
-  - 日本円か？ドルか？
-  - 消費税込みか？税抜きか？
-  - 負の値を取りうるか？
-  - 0は有効か？
-
-プリミティブ型はこれらの疑問に答えられない。
-```
-
-### 2.2 バグ事例 — 通貨を間違えて加算
+#### 症状
 
 ```csharp
-// ❌ Before: 通貨の混在バグが型システムで検出できない
-public class Cart
+// Bad: RepositoryにBusiness Logicが混入
+public interface IOrderRepository
 {
-    public decimal TotalJpy { get; set; }   // 日本円
-    public decimal TotalUsd { get; set; }   // 米ドル
+    Task<Order?> FindByIdAsync(OrderId id);
+    Task SaveAsync(Order order);
 
-    // バグ: 円とドルを足してしまっても型エラーにならない
-    public decimal GetTotal() => TotalJpy + TotalUsd; // ¥10,000 + $100 = 10,100 ???
+    // 以下はBusiness LogicがRepositoryに混入している
+    Task<List<Order>> GetActiveOrdersNotExpiredAndBelongingToVipCustomersAsync();
+    Task<decimal> CalculateTotalRevenueForLastMonthAsync();
+    Task<List<Order>> GetOrdersEligibleForLoyaltyPointsAsync(CustomerId customerId);
+    // Domainロジックを無視したbulk update（ドメインイベントが発行されない）
+    Task UpdateOrderStatusBulkAsync(List<OrderId> orderIds, string newStatus);
+}
+```
+
+#### 修正方法: Specification パターンの完全実装
+
+```csharp
+// Specification基底クラス（コンポジットパターン）
+public abstract class Specification<T>
+{
+    public abstract Expression<Func<T, bool>> ToExpression();
+
+    public bool IsSatisfiedBy(T entity) => ToExpression().Compile()(entity);
+
+    public Specification<T> And(Specification<T> other)
+        => new AndSpecification<T>(this, other);
+
+    public Specification<T> Or(Specification<T> other)
+        => new OrSpecification<T>(this, other);
+
+    public Specification<T> Not()
+        => new NotSpecification<T>(this);
 }
 
-// さらに深刻: 引数の順序を間違えてもコンパイルエラーにならない
-public void ProcessPayment(decimal amount, string currency, string email, string userId)
-{ ... }
-
-// 呼び出し元でミスが起きやすい
-ProcessPayment(100.0m, "user@example.com", "USD", "user-001"); // 引数が逆！
-```
-
-```csharp
-// ❌ Before: バリデーションが呼び出し側に散乱
-public class CustomerService
+internal sealed class AndSpecification<T> : Specification<T>
 {
-    public async Task RegisterAsync(string email, string name)
+    private readonly Specification<T> _left;
+    private readonly Specification<T> _right;
+
+    public AndSpecification(Specification<T> left, Specification<T> right)
     {
-        // バリデーションがサービスに書かれている
-        if (string.IsNullOrWhiteSpace(email))
-            throw new ArgumentException("メールアドレスは必須です");
+        _left = left;
+        _right = right;
+    }
 
-        if (!email.Contains('@'))
-            throw new ArgumentException("メールアドレスの形式が不正です");
+    public override Expression<Func<T, bool>> ToExpression()
+    {
+        var leftExpr = _left.ToExpression();
+        var rightExpr = _right.ToExpression();
+        var param = Expression.Parameter(typeof(T));
+        var body = Expression.AndAlso(
+            Expression.Invoke(leftExpr, param),
+            Expression.Invoke(rightExpr, param));
+        return Expression.Lambda<Func<T, bool>>(body, param);
+    }
+}
 
-        if (email.Length > 254)
-            throw new ArgumentException("メールアドレスが長すぎます");
+// 具体的なSpecification（単一責任）
+public class ActiveOrderSpecification : Specification<Order>
+{
+    public override Expression<Func<Order, bool>> ToExpression()
+        => order => order.Status != OrderStatus.Cancelled
+                 && order.Status != OrderStatus.Delivered;
+}
 
-        // 同じバリデーションがOrderServiceにも書かれている...
+public class RecentOrderSpecification : Specification<Order>
+{
+    private readonly int _daysBefore;
+    public RecentOrderSpecification(int daysBefore = 30) => _daysBefore = daysBefore;
+
+    public override Expression<Func<Order, bool>> ToExpression()
+    {
+        var cutoff = DateTime.UtcNow.AddDays(-_daysBefore);
+        return order => order.CreatedAt >= cutoff;
+    }
+}
+
+public class HighValueOrderSpecification : Specification<Order>
+{
+    private readonly Money _threshold;
+    public HighValueOrderSpecification(Money threshold) => _threshold = threshold;
+
+    public override Expression<Func<Order, bool>> ToExpression()
+        => order => order.TotalAmount.Amount >= _threshold.Amount
+                 && order.TotalAmount.Currency == _threshold.Currency;
+}
+
+// Repositoryはシンプルに保つ
+public interface IOrderRepository
+{
+    Task<Order?> FindByIdAsync(OrderId id);
+    Task<IReadOnlyList<Order>> FindAsync(
+        Specification<Order> specification,
+        int? skip = null,
+        int? take = null);
+    Task<int> CountAsync(Specification<Order> specification);
+    Task SaveAsync(Order order);
+}
+
+// Application ServiceでSpecificationを組み合わせる
+public class OrderReportApplicationService
+{
+    public async Task<IReadOnlyList<Order>> GetHighValueActiveRecentOrdersAsync()
+    {
+        var spec = new ActiveOrderSpecification()
+            .And(new RecentOrderSpecification(30))
+            .And(new HighValueOrderSpecification(new Money(100000m, "JPY")));
+
+        return await _orderRepository.FindAsync(spec);
     }
 }
 ```
 
-### 2.3 After — Value Object で型安全性を保証
+---
+
+### 3.5 Domain Service の過剰使用
+
+#### 症状と判断基準
 
 ```csharp
-// ✅ After: EmailAddress Value Object
-namespace ECommerce.Domain.ValueObjects;
-
-public sealed record EmailAddress
+// Bad: OrderServiceにOrderの振る舞いが集中
+public class OrderService  // Domain Serviceとして誤用
 {
-    public string Value { get; }
-
-    private EmailAddress(string value) => Value = value;
-
-    public static EmailAddress Create(string value)
+    // これはOrderエンティティのメソッドであるべき
+    public void ConfirmOrder(Order order)
     {
-        if (string.IsNullOrWhiteSpace(value))
-            throw new DomainException("メールアドレスは必須です");
-
-        // RFC 5321 準拠の簡易チェック
-        var trimmed = value.Trim().ToLowerInvariant();
-        if (!trimmed.Contains('@') || trimmed.Length > 254)
-            throw new DomainException($"メールアドレスの形式が不正です: {value}");
-
-        var atIndex = trimmed.IndexOf('@');
-        if (atIndex == 0 || atIndex == trimmed.Length - 1)
-            throw new DomainException($"メールアドレスの形式が不正です: {value}");
-
-        return new EmailAddress(trimmed);
+        if (order.Status != "Placed") throw new Exception("確定できないステータスです");
+        order.Status = "Confirmed";
     }
 
-    public static implicit operator string(EmailAddress email) => email.Value;
-    public override string ToString() => Value;
+    // これもOrderエンティティのメソッドであるべき
+    public void ApplyDiscount(Order order, decimal rate)
+    {
+        order.TotalAmount *= (1 - rate);
+    }
 }
 ```
 
+Domain Serviceが正当な場所は「**複数の集約を跨ぐ業務ロジック**」のみです。
+
 ```csharp
-// ✅ After: Money Value Object — 通貨の混在を型で防ぐ
-namespace ECommerce.Domain.ValueObjects;
-
-public sealed record Money(decimal Amount, Currency Currency)
+// Good: Tell, Don't Ask 原則に基づく修正
+public class Order : AggregateRoot<OrderId>
 {
-    public static readonly Money Zero = new(0m, Currency.JPY);
+    // ConfirmはOrderが持つ（単一集約のロジック）
+    public void Confirm()
+    {
+        if (Status != OrderStatus.Placed)
+            throw new DomainException($"ステータスが{Status}の注文は確定できません。");
+        Status = OrderStatus.Confirmed;
+        RecordEvent(new OrderConfirmedEvent(Id, CustomerId));
+    }
 
-    public static Money Of(decimal amount, Currency currency)
+    // ApplyDiscountもOrderが持つ（単一集約のロジック）
+    public void ApplyDiscount(DiscountRate discountRate)
+    {
+        TotalAmount = TotalAmount.ApplyDiscount(discountRate);
+        RecordEvent(new OrderDiscountAppliedEvent(Id, discountRate));
+    }
+}
+
+// 正当なDomain Service: 注文転送（Order + Customerの2集約を跨ぐ）
+public class OrderTransferDomainService
+{
+    // 複数集約にまたがるロジックはDomain Serviceが正当
+    public void TransferOrder(Order order, Customer fromCustomer, Customer toCustomer)
+    {
+        fromCustomer.RemoveOrderRecord(order.Id);
+        order.TransferTo(toCustomer.Id);
+        toCustomer.AddOrderRecord(order.Id);
+    }
+}
+```
+
+---
+
+### 3.6 Application Service に Domain Logic を書く
+
+#### 症状
+
+```csharp
+// Bad: Application Service にドメインロジックが混入
+public class OrderHandler
+{
+    public async Task Handle(ConfirmOrderCommand command)
+    {
+        var order = await _orderRepository.FindByIdAsync(new OrderId(command.OrderId));
+
+        // これはドメインロジック — Application Serviceに書くべきではない
+        if (order.Status.Value == "Placed")
+        {
+            // VIP割引計算がHandlerに漏洩（ドメインルール）
+            if (order.TotalAmount.Amount > 10000m)
+                order.TotalAmount = new Money(order.TotalAmount.Amount * 0.9m, "JPY");
+
+            order.Status = new OrderStatus("Confirmed");
+        }
+
+        await _orderRepository.SaveAsync(order);
+    }
+}
+```
+
+このパターンが生まれる理由: 「ドメインの知識が浅く、どこに書くべきか分からない」「テスト省略の誘惑（Handlerのテストだけで済ませたい）」「締め切りプレッシャー（ここに書けば一番早い）」が主な要因です。
+
+#### 修正方法
+
+```csharp
+// Good: Domain LogicをEntityに移動
+public class Order : AggregateRoot<OrderId>
+{
+    public void Confirm(IDiscountPolicy discountPolicy)
+    {
+        if (Status != OrderStatus.Placed)
+            throw new DomainException($"ステータスが{Status}の注文は確定できません。");
+
+        // 割引ポリシーに基づく割引計算はEntityが行う
+        var discount = discountPolicy.CalculateDiscount(this);
+        if (discount > Money.Zero("JPY"))
+        {
+            TotalAmount = TotalAmount.Subtract(discount);
+            RecordEvent(new OrderDiscountAppliedEvent(Id, discount));
+        }
+
+        Status = OrderStatus.Confirmed;
+        RecordEvent(new OrderConfirmedEvent(Id, CustomerId, TotalAmount));
+    }
+}
+
+// Application Serviceはオーケストレーションのみ
+public class OrderHandler
+{
+    public async Task Handle(ConfirmOrderCommand command)
+    {
+        var order = await _orderRepository.FindByIdAsync(new OrderId(command.OrderId));
+        // ポリシーの取得はApplication Serviceの役割
+        var discountPolicy = await _discountPolicyFactory.GetCurrentPolicyAsync();
+        // ロジックの実行はEntityに委ねる（1行）
+        order.Confirm(discountPolicy);
+        await _orderRepository.SaveAsync(order);
+    }
+}
+```
+
+---
+
+### 3.7 Value Object を Entity にする（逆も然り）
+
+#### 判断基準の再確認
+
+エンティティとバリューオブジェクトの違いを一言で言うと「**同一性（Identity）を持つかどうか**」です。
+
+- **Entity**: IDで識別される。同じ属性を持つ2つのオブジェクトでも、IDが異なれば別物
+- **Value Object**: 属性の値で識別される。同じ属性を持つ2つのオブジェクトは同一
+
+判断のコツ: 「これを複製したら別物になるか？」という問いが有効です。¥100という金額を複製しても同じ¥100（Value Object）。顧客IDが1の顧客を複製したら、それは別の顧客（Entity）。
+
+```csharp
+// Bad: MoneyをEntityにしてしまった場合
+public class Money
+{
+    public int Id { get; set; }       // IDは不要
+    public decimal Amount { get; set; }
+    public string Currency { get; set; }
+}
+// ¥100という金額が2つあっても、異なるIDを持つ「別のもの」になってしまう
+
+// Good: Money は Value Object（不変・値による等価性）
+public sealed class Money : IEquatable<Money>
+{
+    public decimal Amount { get; }
+    public string Currency { get; }
+
+    public Money(decimal amount, string currency)
     {
         if (amount < 0)
-            throw new DomainException("金額は0以上である必要があります");
+            throw new DomainException("金額は0以上である必要があります。");
+        if (string.IsNullOrWhiteSpace(currency))
+            throw new DomainException("通貨コードが不正です。");
 
-        return new Money(amount, currency);
+        Amount = Math.Round(amount, 2);
+        Currency = currency.ToUpperInvariant();
     }
 
+    // 演算はNewオブジェクトを返す（不変性の保証）
     public Money Add(Money other)
     {
-        if (Currency != other.Currency)
-            throw new DomainException(
-                $"異なる通貨は加算できません: {Currency} vs {other.Currency}");
-
+        EnsureSameCurrency(other);
         return new Money(Amount + other.Amount, Currency);
     }
 
-    public Money Multiply(int quantity)
+    public Money Subtract(Money other)
     {
-        if (quantity < 0)
-            throw new DomainException("数量は0以上である必要があります");
-
-        return new Money(Amount * quantity, Currency);
+        EnsureSameCurrency(other);
+        if (Amount < other.Amount)
+            throw new DomainException("減算結果が負になります。");
+        return new Money(Amount - other.Amount, Currency);
     }
 
-    public static Money Sum(IEnumerable<Money> monies)
+    public Money Multiply(int multiplier) => new Money(Amount * multiplier, Currency);
+
+    public Money ApplyDiscount(DiscountRate rate)
+        => new Money(Amount * (1 - rate.Value), Currency);
+
+    private void EnsureSameCurrency(Money other)
     {
-        var list = monies.ToList();
-        if (list.Count == 0) return Zero;
-
-        var currency = list[0].Currency;
-        var total = list.Aggregate(0m, (sum, m) =>
-        {
-            if (m.Currency != currency)
-                throw new DomainException("異なる通貨を合算しようとしました");
-            return sum + m.Amount;
-        });
-
-        return new Money(total, currency);
+        if (Currency != other.Currency)
+            throw new DomainException(
+                $"異なる通貨間の演算はできません: {Currency} と {other.Currency}");
     }
 
-    public static bool operator >(Money left, Money right)
+    public bool Equals(Money? other)
     {
-        EnsureSameCurrency(left, right);
-        return left.Amount > right.Amount;
+        if (other is null) return false;
+        return Amount == other.Amount && Currency == other.Currency;
     }
 
-    public static bool operator <=(Money left, Money right)
-    {
-        EnsureSameCurrency(left, right);
-        return left.Amount <= right.Amount;
-    }
+    public override bool Equals(object? obj) => Equals(obj as Money);
+    public override int GetHashCode() => HashCode.Combine(Amount, Currency);
+    public static bool operator ==(Money? left, Money? right)
+        => left?.Equals(right) ?? right is null;
+    public static bool operator !=(Money? left, Money? right) => !(left == right);
+    public static bool operator >(Money left, Money right) => left.Amount > right.Amount;
+    public static bool operator <(Money left, Money right) => left.Amount < right.Amount;
 
-    private static void EnsureSameCurrency(Money left, Money right)
-    {
-        if (left.Currency != right.Currency)
-            throw new DomainException($"通貨が一致しません: {left.Currency} vs {right.Currency}");
-    }
-
-    public override string ToString() => $"{Amount:N0} {Currency}";
+    public static Money Zero(string currency) => new Money(0m, currency);
+    public override string ToString() => $"{Amount:N2} {Currency}";
 }
 
-public enum Currency { JPY, USD, EUR }
-```
-
-```csharp
-// ✅ After: 型安全になった呼び出し
-var email = EmailAddress.Create("user@example.com");
-var price = Money.Of(10_000m, Currency.JPY);
-var quantity = new Quantity(3); // 負の数量をコンパイル時に防止
-
-// 通貨の混在は型エラー（コンパイルエラー）として検出される
-var jpy = Money.Of(10_000m, Currency.JPY);
-var usd = Money.Of(100m, Currency.USD);
-var wrong = jpy.Add(usd); // ← DomainException（実行時に確実に検出）
-```
-
-### 2.4 その他の Value Object 例
-
-```csharp
-// ✅ Quantity — 負の値や0を防ぐ
-public sealed record Quantity
+// Good: ShippingAddress は Value Object（履歴管理不要な場合）
+public sealed record ShippingAddress
 {
-    public int Value { get; }
+    public string PostalCode { get; }
+    public string Prefecture { get; }
+    public string City { get; }
+    public string Street { get; }
+    public string? Building { get; }
 
-    public Quantity(int value)
+    public ShippingAddress(
+        string postalCode, string prefecture, string city,
+        string street, string? building = null)
     {
-        if (value <= 0)
-            throw new DomainException($"数量は1以上である必要があります: {value}");
-        Value = value;
+        if (!System.Text.RegularExpressions.Regex.IsMatch(postalCode, @"^\d{3}-\d{4}$"))
+            throw new DomainException($"郵便番号の形式が不正です: {postalCode}");
+        if (string.IsNullOrWhiteSpace(prefecture))
+            throw new DomainException("都道府県を入力してください。");
+
+        PostalCode = postalCode;
+        Prefecture = prefecture;
+        City = city;
+        Street = street;
+        Building = building;
     }
 
-    public Quantity Add(Quantity other) => new(Value + other.Value);
-    public bool ExceedsStock(int stockLevel) => Value > stockLevel;
-    public static implicit operator int(Quantity q) => q.Value;
+    public string FullAddress =>
+        $"〒{PostalCode} {Prefecture}{City}{Street}" +
+        (Building is not null ? $" {Building}" : "");
 }
-
-// ✅ OrderId — GuidのラッパーでIDの混在を防ぐ
-public readonly record struct OrderId(Guid Value)
-{
-    public static OrderId NewId() => new(Guid.NewGuid());
-    public static OrderId Parse(string s) => new(Guid.Parse(s));
-    public override string ToString() => Value.ToString();
-}
-
-// ProductIdとOrderIdの混在はコンパイルエラー
-// void DoSomething(OrderId orderId) { ... }
-// DoSomething(new ProductId(someGuid)); // ← コンパイルエラー ✅
 ```
 
 ---
 
-## 3. God Aggregate（神様集約）
+### 3.8 Domain Event の過少使用・過剰使用
 
-### 3.1 症状と問題
-
-```mermaid
-graph TD
-    subgraph "❌ God Aggregate — Order が全てを抱える"
-        O[Order Aggregate] --> C[Customer の全情報\n名前/住所/クレカ/購入履歴]
-        O --> P[Product の全情報\n価格/在庫/説明/画像URL]
-        O --> S[Shipping の全情報\n配送会社/追跡番号/配送状況]
-        O --> Pay[Payment の全情報\n決済方法/領収書/返金履歴]
-        O --> Prom[Promotion の全情報\nクーポン/キャンペーン/割引計算]
-    end
-    style O fill:#ff6b6b
-    style C fill:#ffa8a8
-    style P fill:#ffa8a8
-    style S fill:#ffa8a8
-    style Pay fill:#ffa8a8
-    style Prom fill:#ffa8a8
-```
-
-```mermaid
-graph TD
-    subgraph "✅ 適切な境界設計 — 集約は小さく、参照はIDのみ"
-        O2[Order Aggregate] -->|CustomerId のみ| CI[CustomerId]
-        O2 -->|ProductId のみ| PI[ProductId]
-        O2 --> Ship[Shipment Aggregate]
-        O2 --> Pmnt[Payment Aggregate]
-
-        CA[Customer Aggregate] -.->|別Contextで管理| CI
-        PA[Product Aggregate] -.->|別Contextで管理| PI
-    end
-    style O2 fill:#51cf66
-    style CA fill:#94d82d
-    style PA fill:#94d82d
-    style Ship fill:#74c0fc
-    style Pmnt fill:#74c0fc
-```
-
-### 3.2 Before — God Aggregate の失敗例
+#### 過少使用の問題
 
 ```csharp
-// ❌ Before: Order が Customer と Product の全情報を含む
-namespace ECommerce.Domain;
+// Bad: OrderPlaced後の全副作用がHandlerに散乱
+public class PlaceOrderHandler
+{
+    public async Task Handle(PlaceOrderCommand command)
+    {
+        var order = Order.Place(command.CustomerId, command.Items, command.Address);
+        await _orderRepository.SaveAsync(order);
 
+        // 副作用がHandlerに散乱（関心事の混合）
+        await _emailService.SendOrderConfirmationAsync(order.CustomerId);
+        await _inventoryService.ReserveItemsAsync(order.Lines);
+        await _loyaltyPointService.AddPointsAsync(order.CustomerId, order.TotalAmount);
+        await _warehouseNotificationService.NotifyNewOrderAsync(order);
+        await _analyticsService.TrackOrderPlacedAsync(order);
+        await _crmService.UpdateCustomerLastPurchaseAsync(order.CustomerId);
+    }
+}
+// 問題1: 一つの副作用が失敗すると全体がロールバック
+// 問題2: 新しい副作用追加のたびにHandlerを変更（SRP違反）
+// 問題3: テストが全依存のモックを必要とする
+```
+
+#### 過剰使用の問題
+
+```csharp
+// Bad: 細かすぎるEvent（技術的変化をEventにしている）
 public class Order
 {
-    public Guid Id { get; set; }
-
-    // Customer の全情報を Order に埋め込む — 変更が困難になる
-    public Guid CustomerId { get; set; }
-    public string CustomerName { get; set; } = "";
-    public string CustomerEmail { get; set; } = "";
-    public string CustomerPhone { get; set; } = "";
-    public string CustomerAddress { get; set; } = "";
-    public string CustomerPostalCode { get; set; } = "";
-    public string CustomerPrefecture { get; set; } = "";
-    public CreditCard CustomerCreditCard { get; set; } = null!;
-    public List<OrderHistory> CustomerOrderHistory { get; set; } = [];
-    public CustomerTier CustomerTier { get; set; }
-    public decimal CustomerLoyaltyPoints { get; set; }
-
-    // Order Items — Product の全情報を含む
-    public List<OrderItemWithFullProduct> Items { get; set; } = [];
-
-    // 在庫情報も持つ（在庫変動のたびにOrderが汚染される）
-    public Dictionary<Guid, int> ProductStockSnapshot { get; set; } = [];
-
-    // 配送情報も全て
-    public string ShippingCarrier { get; set; } = "";
-    public string TrackingNumber { get; set; } = "";
-    public DateTime? EstimatedDelivery { get; set; }
-    public List<ShippingStatusUpdate> ShippingHistory { get; set; } = [];
-
-    // 決済情報も全て
-    public string PaymentMethod { get; set; } = "";
-    public string PaymentTransactionId { get; set; } = "";
-    public List<Refund> Refunds { get; set; } = [];
-}
-
-public class OrderItemWithFullProduct
-{
-    public Guid ProductId { get; set; }
-    public string ProductName { get; set; } = "";
-    public string ProductDescription { get; set; } = "";
-    public string ProductCategory { get; set; } = "";
-    public string ProductImageUrl { get; set; } = "";
-    public decimal ProductWeight { get; set; }
-    public Dictionary<string, string> ProductAttributes { get; set; } = [];
-    public int Quantity { get; set; }
-    public decimal UnitPrice { get; set; }
+    public void UpdateNote(string note)
+    {
+        _note = note;
+        // ビジネス的に意味のない変化をEventにしている
+        RecordEvent(new OrderNoteUpdatedEvent(Id, note));
+        RecordEvent(new OrderLastModifiedDateUpdatedEvent(Id, DateTime.UtcNow));
+        RecordEvent(new OrderVersionIncrementedEvent(Id, ++_version));
+    }
 }
 ```
 
-### 3.3 After — 小さな集約と IDによる参照
+#### 適切な使い方の基準と実装
 
 ```csharp
-// ✅ After: Order は最小限の情報のみ持ち、他はIDで参照する
-namespace ECommerce.Domain.Orders;
-
-public sealed class Order
+// Good: ビジネス的に重要な出来事のみEventを発行
+public class Order : AggregateRoot<OrderId>
 {
-    private readonly List<OrderItem> _items = [];
-
-    private Order(OrderId id, CustomerId customerId, ShippingAddress shippingAddress)
+    public static Order Place(CustomerId customerId, ...)
     {
-        Id = id;
-        CustomerId = customerId;
-        // 注文時点の配送先住所はスナップショットとして保持（Customer住所変更に影響されない）
-        ShippingAddress = shippingAddress;
-        Status = OrderStatus.Pending;
-        CreatedAt = DateTime.UtcNow;
+        var order = new Order { /* ... */ };
+        // 「注文が受け付けられた」はビジネス的に重要な出来事
+        order.RecordEvent(new OrderPlacedEvent(order.Id, customerId, order.TotalAmount));
+        return order;
     }
 
-    public OrderId Id { get; }
-    public CustomerId CustomerId { get; }          // ← IDのみ。Customer全体は含まない
-    public ShippingAddress ShippingAddress { get; } // ← 注文時のスナップショット
-    public OrderStatus Status { get; private set; }
-    public IReadOnlyList<OrderItem> Items => _items.AsReadOnly();
-    public Money TotalAmount => Money.Sum(_items.Select(i => i.SubTotal));
-    public DateTime CreatedAt { get; }
-
-    public static Order Place(
-        CustomerId customerId,
-        ShippingAddress shippingAddress)
+    public void UpdateDeliveryNote(string note)
     {
-        return new Order(OrderId.NewId(), customerId, shippingAddress);
+        _deliveryNote = note;
+        // 配送メモの変更はビジネス的に重要でない → Eventは発行しない
     }
-
-    public void AddItem(ProductId productId, int quantity, Money unitPrice)
-    {
-        if (Status != OrderStatus.Pending)
-            throw new DomainException("保留中の注文にのみ追加できます");
-
-        _items.Add(OrderItem.Create(productId, new Quantity(quantity), unitPrice));
-    }
-    // ...
 }
 
-// ✅ OrderItem も ID のみで Product を参照
-public sealed class OrderItem
+// 各ハンドラーが単一責任で副作用を担当
+public class SendOrderConfirmationEmailHandler : IEventHandler<OrderPlacedEvent>
 {
-    private OrderItem(ProductId productId, Quantity quantity, Money unitPrice)
-    {
-        Id = Guid.NewGuid();
-        ProductId = productId;   // ← Product の ID のみ
-        Quantity = quantity;
-        UnitPrice = unitPrice;
-    }
+    public async Task HandleAsync(OrderPlacedEvent @event)
+        => await _emailService.SendOrderConfirmationAsync(@event.CustomerId, @event.OrderId);
+}
 
-    public Guid Id { get; }
-    public ProductId ProductId { get; }   // IDのみ。Product全体は含まない
-    public Quantity Quantity { get; private set; }
-    public Money UnitPrice { get; }
-    public Money SubTotal => UnitPrice.Multiply(Quantity.Value);
+public class ReserveInventoryHandler : IEventHandler<OrderPlacedEvent>
+{
+    public async Task HandleAsync(OrderPlacedEvent @event)
+        => await _inventoryReservationService.ReserveForOrderAsync(@event.OrderId);
+}
 
-    public static OrderItem Create(ProductId productId, Quantity quantity, Money unitPrice)
-        => new(productId, quantity, unitPrice);
-
-    public void IncreaseQuantity(int additionalQuantity)
-        => Quantity = Quantity.Add(new Quantity(additionalQuantity));
+public class AddLoyaltyPointsHandler : IEventHandler<OrderPlacedEvent>
+{
+    public async Task HandleAsync(OrderPlacedEvent @event)
+        => await _loyaltyService.AddPointsAsync(@event.CustomerId, @event.TotalAmount);
 }
 ```
 
-### 3.4 パフォーマンスへの影響
-
-God Aggregateは、パフォーマンス上も深刻な問題を引き起こします。
-
-```
-ロックの競合（Concurrency Conflict）:
-  - 大きな集約は多くのフィールドを含む
-  - 異なる操作（注文確認、配送更新、返金処理）が同一集約を変更しようとする
-  - 楽観的同時実行制御（RowVersion）のコンフリクト率が激増
-  - 悲観的ロックを使えば、スループットが壊滅的に低下する
-
-読み取りパフォーマンス:
-  - Order を1件取得するだけで、Customer/Product/Shipping/Payment の全情報をJOIN
-  - 画面表示に必要なフィールドは全体の10%未満でも、100%をロードする
-  - EF Core の Include() が深くなり、生成SQLが巨大化する
-```
-
-```csharp
-// ❌ God Aggregate を EF Core で読み込む — パフォーマンス問題
-var order = await context.Orders
-    .Include(o => o.Customer)
-        .ThenInclude(c => c.OrderHistory) // 全履歴をロード
-    .Include(o => o.Items)
-        .ThenInclude(i => i.Product)
-            .ThenInclude(p => p.Category)
-            .ThenInclude(p => p.Images) // 商品画像も全ロード
-    .Include(o => o.ShippingHistory)    // 全配送履歴をロード
-    .Include(o => o.Refunds)            // 全返金履歴をロード
-    .FirstOrDefaultAsync(o => o.Id == orderId);
-```
+Eventを発行するかどうかの基準: 「ビジネス的に意味のある出来事（ドメインエキスパートが関心を持つ変化）」のみEventにします。技術的な変化（タイムスタンプ更新・バージョン番号変更等）はEventにしません。「このEventが発行されたとき、他のシステムが何かする必要があるか?」という問いかけも有効です。
 
 ---
 
-## 4. Repository をクエリサービス扱いする
+## 4. アーキテクチャアンチパターン
 
-### 4.1 メソッド増殖の症状
+### 4.1 Presentation Layer が Domain を直接参照
 
-```csharp
-// ❌ Bad Repository — クエリメソッドが無制限に増える
-namespace ECommerce.Infrastructure;
-
-public class OrderRepository : IOrderRepository
-{
-    // 集約の取得（正当なリポジトリの責務）
-    public Task<Order?> FindByIdAsync(OrderId id) { ... }
-
-    // ここからがアンチパターン — 画面ごとにメソッドが生える
-    public Task<List<Order>> FindByCustomerIdAsync(CustomerId customerId) { ... }
-    public Task<List<Order>> FindByStatusAsync(OrderStatus status) { ... }
-    public Task<List<Order>> FindByCustomerIdAndStatusAsync(CustomerId customerId, OrderStatus status) { ... }
-    public Task<List<Order>> FindByDateRangeAsync(DateTime from, DateTime to) { ... }
-    public Task<List<Order>> FindByCustomerIdAndDateRangeAsync(CustomerId customerId, DateTime from, DateTime to) { ... }
-    public Task<List<Order>> FindPendingOrdersOlderThanAsync(TimeSpan age) { ... }
-    public Task<List<Order>> FindByCustomerAndStatusAndDateRangeAsync(
-        CustomerId customerId, OrderStatus status, DateTime from, DateTime to) { ... }
-    public Task<decimal> GetTotalRevenueByDateRangeAsync(DateTime from, DateTime to) { ... }
-    public Task<int> CountOrdersByStatusAsync(OrderStatus status) { ... }
-    public Task<List<Order>> FindTopOrdersByAmountAsync(int top) { ... }
-    public Task<List<OrderSummaryDto>> GetOrderSummariesAsync() { ... } // ← DTO が返り始める
-    public Task<OrderDashboardData> GetDashboardDataAsync() { ... }      // ← 集計データも入る
-    // ... さらに20個
-}
-```
-
-### 4.2 Specification パターンとの対比
+#### 症状・問題・修正方法
 
 ```csharp
-// ✅ Better: Specification パターンで条件を組み合わせる
-namespace ECommerce.Domain.Orders.Specifications;
-
-public abstract class OrderSpecification
+// Bad: Controller がドメインオブジェクトを直接返す
+[ApiController]
+[Route("api/orders")]
+public class OrderController : ControllerBase
 {
-    public abstract IQueryable<Order> Apply(IQueryable<Order> query);
-
-    public OrderSpecification And(OrderSpecification other)
-        => new AndSpecification(this, other);
+    [HttpGet("{id}")]
+    public async Task<Order> GetOrder(Guid id)  // Domainオブジェクトを直接返す
+    {
+        return await _orderRepository.FindByIdAsync(new OrderId(id));
+    }
 }
+// 問題1: Order.DomainEvents（内部状態）がAPIレスポンスに含まれる
+// 問題2: Domain側の変更がAPIレスポンスの形式を直接変える
+// 問題3: 循環参照でJSONシリアライズが失敗する可能性がある
 
-public sealed class OrderByCustomerSpec(CustomerId customerId) : OrderSpecification
-{
-    public override IQueryable<Order> Apply(IQueryable<Order> query)
-        => query.Where(o => o.CustomerId == customerId);
-}
-
-public sealed class OrderByStatusSpec(OrderStatus status) : OrderSpecification
-{
-    public override IQueryable<Order> Apply(IQueryable<Order> query)
-        => query.Where(o => o.Status == status);
-}
-
-public sealed class OrderByDateRangeSpec(DateTime from, DateTime to) : OrderSpecification
-{
-    public override IQueryable<Order> Apply(IQueryable<Order> query)
-        => query.Where(o => o.CreatedAt >= from && o.CreatedAt <= to);
-}
-
-// 使用例: 組み合わせて柔軟なクエリを実現
-var spec = new OrderByCustomerSpec(customerId)
-    .And(new OrderByStatusSpec(OrderStatus.Pending))
-    .And(new OrderByDateRangeSpec(DateTime.Today.AddDays(-30), DateTime.Today));
-
-var orders = await orderRepository.FindBySpecificationAsync(spec);
-```
-
-### 4.3 CQRS / Read Model への誘導
-
-```mermaid
-graph LR
-    subgraph "Command Side（書き込み）"
-        CMD[Command] --> AH[Application Handler]
-        AH --> AGG[Aggregate]
-        AGG --> REPO[Repository\nIDによる保存・取得のみ]
-        REPO --> DB[(Write DB)]
-    end
-
-    subgraph "Query Side（読み取り）"
-        QRY[Query] --> QH[Query Handler]
-        QH --> RM[Read Model\nDenormalized View]
-        RM --> RDB[(Read DB / View)]
-    end
-
-    DB -.->|投影 / Event Sourcing| RDB
-```
-
-```csharp
-// ✅ Best: CQRS — 読み取り用の Query Handler と Read Model を分離
-namespace ECommerce.Application.Orders.Queries;
-
-// Read Model — 画面表示用に最適化されたDTO
-public sealed record OrderListItemDto(
+// Good: DTOで変換（Presentation層とDomain層を分離）
+public sealed record OrderResponse(
     Guid Id,
-    string CustomerName,
     string Status,
     decimal TotalAmount,
     string Currency,
-    DateTime CreatedAt,
-    int ItemCount);
+    string ShippingFullAddress,
+    IReadOnlyList<OrderLineResponse> Lines,
+    DateTimeOffset CreatedAt);
 
-// Query — 検索条件を表すオブジェクト
-public sealed record GetOrderListQuery(
-    Guid? CustomerId,
-    string? Status,
-    DateTime? FromDate,
-    DateTime? ToDate,
-    int Page = 1,
-    int PageSize = 20);
+public sealed record OrderLineResponse(
+    Guid ProductId,
+    string ProductName,
+    int Quantity,
+    decimal UnitPrice,
+    decimal LineTotal);
 
-// Query Handler — リポジトリを使わず、DBに直接クエリ
-public sealed class GetOrderListQueryHandler(IDbConnection connection)
+[ApiController]
+[Route("api/orders")]
+public class OrderController : ControllerBase
 {
-    public async Task<PagedResult<OrderListItemDto>> HandleAsync(GetOrderListQuery query)
+    [HttpGet("{id:guid}")]
+    public async Task<ActionResult<OrderResponse>> GetOrder(Guid id)
     {
-        // Dapper や EF Core の AsNoTracking で最適化されたクエリを実行
-        var sql = BuildSql(query);
-        var results = await connection.QueryAsync<OrderListItemDto>(sql, query);
-        return new PagedResult<OrderListItemDto>(results.ToList(), query.Page, query.PageSize);
+        var dto = await _orderQueryService.GetOrderAsync(new OrderId(id));
+        if (dto is null) return NotFound();
+        return Ok(MapToResponse(dto));
     }
 
-    private static string BuildSql(GetOrderListQuery query)
-    {
-        var conditions = new List<string>();
-        if (query.CustomerId.HasValue)
-            conditions.Add("o.customer_id = @CustomerId");
-        if (!string.IsNullOrEmpty(query.Status))
-            conditions.Add("o.status = @Status");
-        if (query.FromDate.HasValue)
-            conditions.Add("o.created_at >= @FromDate");
-        if (query.ToDate.HasValue)
-            conditions.Add("o.created_at <= @ToDate");
-
-        var where = conditions.Count > 0
-            ? $"WHERE {string.Join(" AND ", conditions)}"
-            : "";
-
-        return $"""
-            SELECT
-                o.id,
-                c.name AS customer_name,
-                o.status,
-                o.total_amount,
-                o.currency,
-                o.created_at,
-                COUNT(oi.id) AS item_count
-            FROM orders o
-            JOIN customers c ON c.id = o.customer_id
-            JOIN order_items oi ON oi.order_id = o.id
-            {where}
-            GROUP BY o.id, c.name, o.status, o.total_amount, o.currency, o.created_at
-            ORDER BY o.created_at DESC
-            LIMIT @PageSize OFFSET @Offset
-            """;
-    }
+    private static OrderResponse MapToResponse(OrderDto dto)
+        => new(dto.Id, dto.Status.DisplayName, dto.TotalAmount.Amount,
+               dto.TotalAmount.Currency, dto.ShippingAddress.FullAddress,
+               dto.Lines.Select(l => new OrderLineResponse(
+                   l.ProductId, l.ProductName, l.Quantity,
+                   l.UnitPrice, l.LineTotal)).ToList(),
+               dto.CreatedAt);
 }
 ```
 
 ---
 
-## 5. Domain Event の乱用・誤用
+### 4.2 Domain が Infrastructure に依存
 
-### 5.1 Event Spamming（すべての操作にEventを付ける）
-
-```csharp
-// ❌ Bad: すべての操作にEventを発行する
-public sealed class Order
-{
-    public void UpdateCustomerName(string name)
-    {
-        CustomerName = name;
-        // 名前更新ごとにEventを発行？ほとんどのリスナーが不要
-        _events.Add(new CustomerNameUpdatedOnOrderEvent(Id, name));
-    }
-
-    public void AddNote(string note)
-    {
-        Notes.Add(note);
-        // メモ追加にEvent？
-        _events.Add(new NoteAddedToOrderEvent(Id, note));
-    }
-
-    public void UpdateLastModifiedTimestamp()
-    {
-        LastModified = DateTime.UtcNow;
-        // タイムスタンプ更新でEvent？
-        _events.Add(new OrderTimestampUpdatedEvent(Id, LastModified));
-    }
-}
-```
-
-**判断基準**: ドメインイベントは「ビジネス的に重要な出来事」のみに絞るべきです。
-
-```
-✅ Domain Event にすべきもの:
-  - OrderConfirmed（注文が確認された）
-  - OrderShipped（注文が出荷された）
-  - OrderCancelled（注文がキャンセルされた）
-  - PaymentFailed（決済が失敗した）
-  - StockDepleted（在庫が枯渇した）
-
-❌ Domain Event にすべきでないもの:
-  - OrderLastModifiedTimestampUpdated
-  - OrderNoteAdded（ビジネスサイドへの影響がない）
-  - OrderViewedByAdmin（読み取り操作）
-```
-
-### 5.2 Event の発行タイミングの誤り（Dispatcher の前後問題）
+#### 症状と依存逆転の原則（DIP）での解決
 
 ```csharp
-// ❌ Bad: Eventをドメインオブジェクト内で即発行する（副作用が制御できない）
-public sealed class Order
+// Bad: DomainエンティティがDbContextを参照（依存の方向が逆）
+public class Order : AggregateRoot<OrderId>
 {
-    private readonly IEventPublisher _publisher; // ← ドメインオブジェクトがインフラに依存
+    private readonly AppDbContext _dbContext;  // Infrastructure依存！
 
-    public async Task ConfirmAsync()
+    public async Task SaveHistoryAsync(string action)
     {
-        Status = OrderStatus.Confirmed;
-        // DBに保存される前にEventが発行される可能性
-        // → リスナーがDBを参照すると古いデータを見る
-        await _publisher.PublishAsync(new OrderConfirmedEvent(Id));
-    }
-}
-```
-
-```csharp
-// ✅ Good: Eventはドメインオブジェクトが蓄積し、UoW CommitAfterでDispatch
-public sealed class Order
-{
-    private readonly List<IDomainEvent> _events = [];
-
-    public void Confirm()
-    {
-        Status = OrderStatus.Confirmed;
-        // Eventを蓄積するだけ — 即発行しない
-        _events.Add(new OrderConfirmedEvent(Id, CustomerId, TotalAmount));
+        // DomainがInfrastructureを直接呼ぶ → テスト不可、DIP違反
+        await _dbContext.OrderHistories.AddAsync(
+            new OrderHistoryEntity { OrderId = Id.Value, Action = action });
+        await _dbContext.SaveChangesAsync();
     }
 }
 
-// UnitOfWork が Commit 後に Event を Dispatch する
-public sealed class UnitOfWork(
-    AppDbContext context,
-    IEventDispatcher eventDispatcher) : IUnitOfWork
+// Good: 依存逆転の原則（DIP）— Domain層がインターフェースを所有する
+namespace OrderManagement.Domain.Repositories
 {
-    public async Task CommitAsync(CancellationToken ct = default)
+    // このインターフェースはDomain層に属する
+    // Infrastructure層がこのインターフェースに依存する（逆転）
+    public interface IOrderRepository
     {
-        // 1. まず全変更をDBに保存（ここでトランザクションが完了）
-        await context.SaveChangesAsync(ct);
-
-        // 2. DBへの書き込みが確定してからEventをDispatch
-        var aggregates = context.ChangeTracker
-            .Entries<IAggregateRoot>()
-            .Select(e => e.Entity)
-            .Where(a => a.DomainEvents.Any())
-            .ToList();
-
-        var events = aggregates.SelectMany(a => a.DomainEvents).ToList();
-        aggregates.ForEach(a => a.ClearDomainEvents());
-
-        foreach (var @event in events)
-            await eventDispatcher.DispatchAsync(@event, ct);
+        Task<Order?> FindByIdAsync(OrderId id);
+        Task<IReadOnlyList<Order>> FindAsync(Specification<Order> specification);
+        Task SaveAsync(Order order);
     }
 }
-```
 
-### 5.3 Eventに集約の全フィールドを含める
-
-```csharp
-// ❌ Bad: Event に全フィールドを含めると、Event が肥大化し変更に弱くなる
-public sealed record OrderConfirmedEvent(
-    Guid OrderId,
-    string CustomerName,      // ← Event Consumer が本当に必要?
-    string CustomerEmail,
-    string CustomerAddress,
-    string CustomerPostalCode,
-    List<OrderItemSnapshot> AllItems,  // ← 全アイテムのスナップショット
-    decimal TotalAmount,
-    string PaymentMethod,
-    string ShippingCarrier,
-    // ... 30フィールド
-    DateTime ConfirmedAt) : IDomainEvent;
-
-// ✅ Good: Event には「何が起きたか」を最小限で表現する
-// Consumer が詳細を必要とするなら、Query Side から取得する
-public sealed record OrderConfirmedEvent(
-    OrderId OrderId,
-    CustomerId CustomerId,
-    Money TotalAmount,
-    DateTime ConfirmedAt) : IDomainEvent;
-```
-
----
-
-## 6. Application Service にビジネスロジックを書く
-
-### 6.1 Application Service の正しい責務
-
-Application Service（UseCase とも呼ばれる）の責務は **オーケストレーション** です。
-
-```
-Application Service の正しい責務:
-  ✅ リポジトリから集約を取得する
-  ✅ ドメインオブジェクトのメソッドを呼び出す（ビジネスルールの実行を委譲）
-  ✅ UnitOfWork で変更をコミットする
-  ✅ Event の Dispatch（UoW 経由）
-  ✅ DTO への変換
-
-Application Service がやってはいけないこと:
-  ❌ ビジネスルールの検証（if Status != Confirmed...）
-  ❌ 集約の不変条件チェック
-  ❌ ドメイン計算（割引計算、税計算）
-  ❌ 複雑な条件分岐（ビジネス判断を含むもの）
-```
-
-### 6.2 Before — ビジネスロジックが漏れた例
-
-```csharp
-// ❌ Before: Application Service にビジネスロジックが混入
-namespace ECommerce.Application;
-
-public class OrderApplicationService(
-    IOrderRepository orderRepository,
-    ICustomerRepository customerRepository)
+// Infrastructure層: インターフェースを実装（依存の逆転）
+namespace OrderManagement.Infrastructure.Repositories
 {
-    public async Task ApplyDiscountAsync(Guid orderId, string couponCode)
+    public class EfOrderRepository : IOrderRepository
     {
-        var order = await orderRepository.FindByIdAsync(new OrderId(orderId))
-            ?? throw new NotFoundException(orderId);
+        private readonly AppDbContext _dbContext;
 
-        var customer = await customerRepository.FindByIdAsync(order.CustomerId)
-            ?? throw new NotFoundException(order.CustomerId);
-
-        // ❌ 割引計算ロジックが Application Service に書かれている
-        decimal discountRate = 0m;
-
-        if (couponCode == "MEMBER10")
-            discountRate = 0.10m;
-        else if (couponCode == "MEMBER20" && customer.Tier == CustomerTier.Gold)
-            discountRate = 0.20m;
-        else if (couponCode == "VIP30" && customer.Tier == CustomerTier.Platinum
-            && order.TotalAmount.Amount >= 10_000m)
-            discountRate = 0.30m;
-
-        if (discountRate == 0m)
-            throw new InvalidOperationException("クーポンコードが無効です");
-
-        if (order.Status != OrderStatus.Pending)
-            throw new InvalidOperationException("保留中の注文のみ割引を適用できます");
-
-        var discountAmount = order.TotalAmount.Amount * discountRate;
-        order.DiscountAmount = discountAmount; // setterで直接変更
-        order.FinalAmount = order.TotalAmount.Amount - discountAmount;
-
-        await orderRepository.SaveAsync(order);
-    }
-}
-```
-
-### 6.3 After — ドメイン層に戻す
-
-```csharp
-// ✅ After: 割引ロジックをドメインサービスとエンティティに戻す
-
-// ドメインサービス — 複数の集約をまたぐビジネスロジック
-namespace ECommerce.Domain.Services;
-
-public sealed class DiscountDomainService
-{
-    public Discount CalculateDiscount(Order order, Customer customer, CouponCode coupon)
-    {
-        var eligibleRate = DetermineDiscountRate(customer.Tier, coupon);
-
-        if (eligibleRate == 0m)
-            throw new DomainException($"クーポン '{coupon}' は無効またはこのお客様は対象外です");
-
-        if (order.TotalAmount < MinimumOrderAmountForCoupon(coupon))
-            throw new DomainException($"このクーポンは¥{MinimumOrderAmountForCoupon(coupon).Amount:N0}以上の注文に適用できます");
-
-        return Discount.Of(eligibleRate, coupon);
-    }
-
-    private static decimal DetermineDiscountRate(CustomerTier tier, CouponCode coupon) =>
-        (coupon.Value, tier) switch
+        public EfOrderRepository(AppDbContext dbContext)
         {
-            ("MEMBER10", _) => 0.10m,
-            ("MEMBER20", CustomerTier.Gold) => 0.20m,
-            ("MEMBER20", CustomerTier.Platinum) => 0.20m,
-            ("VIP30", CustomerTier.Platinum) => 0.30m,
-            _ => 0m
-        };
+            _dbContext = dbContext;
+        }
 
-    private static Money MinimumOrderAmountForCoupon(CouponCode coupon) =>
-        coupon.Value switch
+        public async Task<Order?> FindByIdAsync(OrderId id)
         {
-            "VIP30" => Money.Of(10_000m, Currency.JPY),
-            _ => Money.Zero
-        };
-}
-```
+            var entity = await _dbContext.Orders
+                .Include(o => o.Lines)
+                .FirstOrDefaultAsync(o => o.Id == id.Value);
 
-```csharp
-// Order にビジネスロジックを戻す
-public sealed class Order
-{
-    public void ApplyDiscount(Discount discount)
-    {
-        if (Status != OrderStatus.Pending)
-            throw new DomainException("保留中の注文のみ割引を適用できます");
+            return entity is null ? null : OrderMapper.ToDomain(entity);
+        }
 
-        if (_discount is not null)
-            throw new DomainException("割引はすでに適用されています");
+        public async Task SaveAsync(Order order)
+        {
+            var entity = await _dbContext.Orders
+                .FirstOrDefaultAsync(o => o.Id == order.Id.Value);
 
-        _discount = discount;
-        _events.Add(new DiscountAppliedEvent(Id, discount.Rate, discount.CouponCode));
-    }
+            if (entity is null)
+                _dbContext.Orders.Add(OrderMapper.ToEntity(order));
+            else
+                OrderMapper.UpdateEntity(entity, order);
 
-    public Money FinalAmount => _discount is null
-        ? TotalAmount
-        : TotalAmount.Multiply(1m - _discount.Rate);
-}
-```
-
-```csharp
-// ✅ After: Application Service はオーケストレーションのみ
-public sealed class ApplyDiscountCommandHandler(
-    IOrderRepository orderRepository,
-    ICustomerRepository customerRepository,
-    DiscountDomainService discountDomainService,
-    IUnitOfWork unitOfWork)
-{
-    public async Task HandleAsync(ApplyDiscountCommand command)
-    {
-        var order = await orderRepository.FindByIdAsync(command.OrderId)
-            ?? throw new NotFoundException(command.OrderId);
-
-        var customer = await customerRepository.FindByIdAsync(order.CustomerId)
-            ?? throw new NotFoundException(order.CustomerId);
-
-        // ドメインサービスに委譲 — Application Service は判断しない
-        var discount = discountDomainService.CalculateDiscount(
-            order, customer, new CouponCode(command.CouponCode));
-
-        order.ApplyDiscount(discount);
-
-        await unitOfWork.CommitAsync();
+            await _dbContext.SaveChangesAsync();
+        }
     }
 }
 ```
+
+依存の方向は常に「外側から内側へ（Infrastructure → Application → Domain）」。Domain層は何にも依存しません。これによりDomain層のコードはEFCoreなしで単体テストできます。
 
 ---
 
-## 7. Shared Kernel の過剰使用
+### 4.3 Application Service が複数の Aggregate を1トランザクションで更新
 
-### 7.1 「共通化」の名目で肥大化するパターン
+#### なぜ問題か
 
-Shared Kernel は、複数の Bounded Context が **意図的に共有する** コアの概念です。しかし「共通化」の誘惑により、Shared Kernel があらゆる概念を吸収して肥大化するケースが多発します。
+```csharp
+// Bad: 複数集約を1トランザクションで更新
+public async Task ConfirmOrderAsync(ConfirmOrderCommand command)
+{
+    using var transaction = await _dbContext.Database.BeginTransactionAsync();
+    try
+    {
+        var order = await _orderRepository.FindByIdAsync(new OrderId(command.OrderId));
+        var inventory = await _inventoryRepository
+            .FindByProductIdsAsync(order.Lines.Select(l => l.ProductId));
+
+        order.Confirm();
+
+        foreach (var item in inventory)
+        {
+            var line = order.Lines.First(l => l.ProductId == item.ProductId);
+            item.Reserve(line.Quantity);
+        }
+
+        // 2つの集約を1トランザクション — 問題多数
+        await _orderRepository.SaveAsync(order);
+        await _inventoryRepository.SaveAllAsync(inventory);
+        await transaction.CommitAsync();
+    }
+    catch { await transaction.RollbackAsync(); throw; }
+}
+// 問題1: マイクロサービス化した瞬間に実装不可能
+// 問題2: 在庫サービスがダウンすると注文も確定できなくなる（可用性低下）
+// 問題3: 集約境界の意味がなくなる
+```
+
+#### Domain Event を使った非同期処理への移行
 
 ```mermaid
-graph TD
-    subgraph "❌ 肥大化した Shared Kernel"
-        SK[Shared Kernel] -->|入れすぎ| M[Money]
-        SK -->|入れすぎ| A[Address]
-        SK -->|入れすぎ| C[Customer 全情報]
-        SK -->|入れすぎ| P[Product 全カタログ]
-        SK -->|入れすぎ| O[Order ステータス管理]
-        SK -->|入れすぎ| N[Notification テンプレート]
-        SK -->|入れすぎ| Auth[認証・認可ロジック]
-        SK -->|入れすぎ| Cfg[設定・フィーチャーフラグ]
-    end
+sequenceDiagram
+    participant C as Client
+    participant OAS as OrderApplicationService
+    participant O as Order集約
+    participant EB as EventBus
+    participant IH as InventoryHandler
+    participant I as Inventory集約
 
-    subgraph "✅ 適切な Shared Kernel"
-        SK2[Shared Kernel] --> M2[Money Value Object]
-        SK2 --> A2[Address Value Object]
-        SK2 --> DR[DateRange Value Object]
-        SK2 --> LI[Language/Locale]
-    end
+    C->>OAS: ConfirmOrderAsync
+    OAS->>O: order.Confirm()
+    O-->>OAS: OrderConfirmedEvent
+    OAS->>EB: Publish(OrderConfirmedEvent)
+    OAS-->>C: 200 OK（即座に返す）
 
-    style SK fill:#ff6b6b
-    style SK2 fill:#51cf66
-```
-
-### 7.2 正しい Shared Kernel のスコープ
-
-```csharp
-// ✅ Shared Kernel に含めるべきもの — 汎用 Value Object のみ
-namespace SharedKernel;
-
-// Money — 複数 Context が通貨計算を必要とする
-public sealed record Money(decimal Amount, Currency Currency)
-{
-    // ... (前述の実装)
-}
-
-// Address — 複数 Context が住所を扱う
-public sealed record Address(
-    string PostalCode,
-    string Prefecture,
-    string City,
-    string Line1,
-    string? Line2 = null)
-{
-    public static Address Create(
-        string postalCode, string prefecture, string city, string line1, string? line2 = null)
-    {
-        if (string.IsNullOrWhiteSpace(postalCode))
-            throw new DomainException("郵便番号は必須です");
-        if (string.IsNullOrWhiteSpace(prefecture))
-            throw new DomainException("都道府県は必須です");
-        return new Address(postalCode.Trim(), prefecture.Trim(), city.Trim(), line1.Trim(), line2?.Trim());
-    }
-
-    public override string ToString()
-        => $"〒{PostalCode} {Prefecture}{City}{Line1}{(Line2 is not null ? $" {Line2}" : "")}";
-}
-
-// DateRange — 期間を表す汎用 Value Object
-public sealed record DateRange(DateOnly Start, DateOnly End)
-{
-    public static DateRange Create(DateOnly start, DateOnly end)
-    {
-        if (end < start)
-            throw new DomainException($"終了日({end})は開始日({start})以降でなければなりません");
-        return new DateRange(start, end);
-    }
-
-    public bool Contains(DateOnly date) => date >= Start && date <= End;
-    public bool Overlaps(DateRange other) => Start <= other.End && End >= other.Start;
-    public int TotalDays => End.DayNumber - Start.DayNumber + 1;
-}
+    Note over EB,I: 非同期処理（別トランザクション）
+    EB->>IH: OrderConfirmedEvent
+    IH->>I: inventory.Reserve()
+    I-->>IH: InventoryReservedEvent
 ```
 
 ```csharp
-// ❌ Shared Kernel に含めてはいけないもの
-
-// Customer の全情報 — これは Customer Context の責任
-// SharedKernel に Customer を入れると、Customer を参照するすべての Context が
-// Customer Context の変更に依存してしまう
-namespace SharedKernel; // ← ここに Customer があるとまずい
-public class Customer { ... } // ← Shared Kernel に入れてはいけない
-
-// Order ステータスの状態遷移ロジック — Order Context の責任
-namespace SharedKernel; // ← ここに OrderStatus の遷移ロジックがあるとまずい
-public static class OrderStateMachine { ... } // ← NG
-
-// 認証・認可ロジック — Identity Context の責任
-namespace SharedKernel; // ← ここに認証ロジックがあるとまずい
-public class AuthorizationService { ... } // ← NG
-```
-
----
-
-## 8. よくある誤り TOP10 一覧表
-
-| # | アンチパターン | 症状 | 解消策 |
-|---|--------------|------|--------|
-| 1 | Anemic Domain Model | Entityにgetterとsetterしかない | ビジネスメソッドをエンティティに移動 |
-| 2 | Primitive Obsession | `string email`, `decimal price` が引数に並ぶ | Value Objectでラップ |
-| 3 | God Aggregate | 1つの集約が1,000行を超える | 集約を小さく分割、IDで参照 |
-| 4 | Repository がクエリサービス | リポジトリのメソッドが20個を超える | CQRS、Read Modelの分離 |
-| 5 | Event Spamming | すべての変更にDomain Eventが発行される | ビジネス的に重要な出来事のみEventに |
-| 6 | Application Serviceへのロジック漏出 | Application Serviceにif文が並ぶ | ドメインオブジェクト／ドメインサービスへ移動 |
-| 7 | Shared Kernelの肥大化 | Shared KernelにEntity/Serviceが入る | Money/Address/DateRangeのみに絞る |
-| 8 | ドメインオブジェクトがインフラに依存 | EntityのコンストラクタにDbContextが入る | 依存を逆転、Infrastructure層に移動 |
-| 9 | Bounded Contextを無視したモデル共有 | 全コンテキストが同じUserエンティティを参照 | 各ContextがUser IDのみを持つ |
-| 10 | ユビキタス言語の無視 | コードの用語とドメインエキスパートの用語が乖離 | 定期的なEvent Stormingで用語を統一 |
-
----
-
-## 9. コードレビュー観点（15項目）
-
-DDDを採用したコードのレビューでは、以下の15項目を確認してください。
-
-### 9.1 ドメインモデルの健全性
-
-1. **ビジネスルールの所在**: ビジネス判断を含む条件分岐がApplication ServiceやControllerにないか。`if (order.Status != ...)` がサービス層にあったら要確認。
-
-2. **不変条件の保護**: Entityの状態を変えるメソッドが、事前条件チェックを内包しているか。外部から `entity.Status = X` のように直接setterで状態変更していないか。
-
-3. **コンストラクタとファクトリ**: Entityの生成が `new Entity()` で直接行われていないか。ファクトリメソッドを通じ、生成時の不変条件が保証されているか。
-
-4. **Value Objectの使用**: `string email`, `decimal amount`, `Guid userId` がメソッドシグネチャに並んでいたら、Value Objectに置き換えるべき候補。
-
-5. **集約サイズ**: 1つの集約クラスが500行を超えていたら、集約の分割を検討する。
-
-### 9.2 レイヤー責務の分離
-
-6. **Application Serviceの純粋性**: Application ServiceがDB操作（EF Coreのメソッドへの直接アクセス）を行っていないか。Infrastructure層に委譲されているか。
-
-7. **ドメインのインフラ依存**: DomainエンティティがDbContextやHTTPクライアントなどのインフラを参照していないか。
-
-8. **Repositoryのインターフェース所在**: `IOrderRepository` インターフェースがDomain/Application層に、実装がInfrastructure層に置かれているか。
-
-9. **DTO変換の位置**: Application ServiceがDomain ObjectをDTOに変換しているか（ControllerでEntityを直接シリアライズしていないか）。
-
-### 9.3 Domain Event
-
-10. **Eventの発行タイミング**: Domain EventがドメインオブジェクトのメソッドでListに蓄積され、UnitOfWork Commitの後にDispatchされているか。
-
-11. **Eventの粒度**: EventがビジネスドメインとしてUbiquitous Languageで表現されているか（技術的操作名（`Updated`, `Changed`）になっていないか）。
-
-12. **Eventに含まれる情報**: Eventが必要最小限の情報のみを含んでいるか（集約の全フィールドのスナップショットになっていないか）。
-
-### 9.4 集約の境界
-
-13. **集約間の参照**: 別の集約をナビゲーションプロパティで持っていないか（IDのみで参照しているか）。
-
-14. **トランザクション境界**: 1つのトランザクションで複数の集約を変更していないか（2つ以上の集約を1回のCommitで変更しているなら要検討）。
-
-15. **Shared KernelとBounded Context**: Shared KernelにEntity/Serviceが含まれていないか。各Bounded Contextが適切に隔離されているか。
-
----
-
-## 10. 演習問題
-
-### 演習1: 貧血ドメインモデルを改善する
-
-**問題**: 以下のコードには複数のアンチパターンが含まれています。何が問題か特定し、改善案を示してください。
-
-```csharp
-// 問題のあるコード
-public class BankAccount
+// Good: Domain Eventによる結果整合性
+public async Task ConfirmOrderAsync(ConfirmOrderCommand command)
 {
-    public Guid Id { get; set; }
-    public decimal Balance { get; set; }
-    public bool IsActive { get; set; }
-    public string AccountNumber { get; set; } = "";
-    public string OwnerName { get; set; } = "";
+    // Order集約のみを1トランザクションで更新（単一集約原則）
+    var order = await _orderRepository.FindByIdAsync(new OrderId(command.OrderId));
+    order.Confirm(await _discountPolicyRepository.GetCurrentAsync());
+    await _orderRepository.SaveAsync(order);
+
+    // OrderConfirmedEventが発行される → Inventoryは非同期で別トランザクション処理
+    foreach (var domainEvent in order.DomainEvents)
+        await _eventBus.PublishAsync(domainEvent);
+    // クライアントへは即座にOKを返す
 }
 
-public class BankAccountService
+// Inventory側が非同期でイベントを受け取り、自分のトランザクションで処理
+public class ReserveInventoryOnOrderConfirmedHandler
+    : IEventHandler<OrderConfirmedEvent>
 {
-    public void Deposit(BankAccount account, decimal amount)
+    public async Task HandleAsync(OrderConfirmedEvent @event)
     {
-        if (!account.IsActive)
-            throw new Exception("非アクティブなアカウントです");
-        if (amount <= 0)
-            throw new Exception("入金額は0より大きい必要があります");
+        var inventoryItems = await _inventoryRepository
+            .FindByProductIdsAsync(@event.ProductIds);
 
-        account.Balance += amount;
-    }
-
-    public void Withdraw(BankAccount account, decimal amount)
-    {
-        if (!account.IsActive)
-            throw new Exception("非アクティブなアカウントです");
-        if (amount <= 0)
-            throw new Exception("出金額は0より大きい必要があります");
-        if (account.Balance < amount)
-            throw new Exception("残高不足です");
-
-        account.Balance -= amount;
-    }
-
-    public void Transfer(BankAccount from, BankAccount to, decimal amount)
-    {
-        Withdraw(from, amount);
-        Deposit(to, amount);
-    }
-}
-```
-
-**解答**:
-
-問題点の列挙:
-
-1. **Anemic Domain Model**: `BankAccount` は getter/setter のみ。`Deposit`/`Withdraw` というビジネスロジックが `BankAccountService` に流出。
-2. **Primitive Obsession**: `decimal amount` ——通貨・符号の制約が型で表現されていない。`string accountNumber` ——口座番号の形式検証が型外。
-3. **不変条件の保護不足**: `Balance` が `public set` なので外部から `account.Balance = -999999` と書ける。
-4. **例外型の問題**: ドメイン例外ではなく `System.Exception` を直接投げている。
-
-```csharp
-// ✅ 改善後
-namespace Banking.Domain;
-
-public sealed class BankAccount
-{
-    private Money _balance;
-
-    private BankAccount(AccountNumber number, string ownerName, Money initialBalance)
-    {
-        Id = Guid.NewGuid();
-        Number = number;
-        OwnerName = ownerName;
-        _balance = initialBalance;
-        IsActive = true;
-    }
-
-    public Guid Id { get; }
-    public AccountNumber Number { get; }
-    public string OwnerName { get; }
-    public Money Balance => _balance;
-    public bool IsActive { get; private set; }
-
-    private readonly List<IDomainEvent> _events = [];
-    public IReadOnlyList<IDomainEvent> DomainEvents => _events.AsReadOnly();
-
-    public static BankAccount Open(AccountNumber number, string ownerName, Currency currency)
-    {
-        if (string.IsNullOrWhiteSpace(ownerName))
-            throw new DomainException("口座名義人は必須です");
-
-        return new BankAccount(number, ownerName, Money.Of(0m, currency));
-    }
-
-    public void Deposit(Money amount)
-    {
-        EnsureActive();
-        if (amount <= Money.Of(0m, _balance.Currency))
-            throw new DomainException("入金額は0より大きい必要があります");
-
-        _balance = _balance.Add(amount);
-        _events.Add(new MoneyDepositedEvent(Id, amount, _balance));
-    }
-
-    public void Withdraw(Money amount)
-    {
-        EnsureActive();
-        if (amount <= Money.Of(0m, _balance.Currency))
-            throw new DomainException("出金額は0より大きい必要があります");
-        if (_balance < amount)
-            throw new DomainException($"残高が不足しています（残高: {_balance}、要求: {amount}）");
-
-        _balance = _balance.Subtract(amount);
-        _events.Add(new MoneyWithdrawnEvent(Id, amount, _balance));
-    }
-
-    public void Close()
-    {
-        EnsureActive();
-        if (_balance.Amount > 0)
-            throw new DomainException("残高がある口座は閉鎖できません");
-
-        IsActive = false;
-        _events.Add(new AccountClosedEvent(Id));
-    }
-
-    public void ClearDomainEvents() => _events.Clear();
-
-    private void EnsureActive()
-    {
-        if (!IsActive)
-            throw new DomainException("非アクティブな口座では操作できません");
-    }
-}
-
-// Value Object
-public sealed record AccountNumber
-{
-    public string Value { get; }
-
-    public AccountNumber(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            throw new DomainException("口座番号は必須です");
-
-        var normalized = value.Replace("-", "").Trim();
-        if (normalized.Length != 7 || !normalized.All(char.IsDigit))
-            throw new DomainException("口座番号は7桁の数字である必要があります");
-
-        Value = normalized;
-    }
-
-    public override string ToString() => $"{Value[..3]}-{Value[3..]}";
-}
-```
-
----
-
-### 演習2: God Aggregate を分割する
-
-**問題**: 以下の `BlogPost` 集約を適切に分割し、境界を再設計してください。
-
-```csharp
-// 問題のあるコード — BlogPost が過多な責任を持つ
-public class BlogPost
-{
-    public Guid Id { get; set; }
-    public string Title { get; set; } = "";
-    public string Content { get; set; } = "";
-    public string AuthorName { get; set; } = "";
-    public string AuthorEmail { get; set; } = "";
-    public string AuthorBio { get; set; } = "";
-    public List<Comment> Comments { get; set; } = [];
-    public List<Tag> Tags { get; set; } = [];
-    public List<Like> Likes { get; set; } = [];
-    public List<View> Views { get; set; } = [];  // 全閲覧履歴
-    public int ViewCount { get; set; }
-    public List<Revision> Revisions { get; set; } = []; // 全編集履歴
-    public DateTime PublishedAt { get; set; }
-    public bool IsPublished { get; set; }
-    public string SeoTitle { get; set; } = "";
-    public string SeoDescription { get; set; } = "";
-    public string OgImageUrl { get; set; } = "";
-}
-```
-
-**解答**:
-
-```
-集約分割の分析:
-
-BlogPost の中に混在している責任:
-1. 記事コンテンツ（Title/Content/PublishedAt）→ BlogPost Aggregate
-2. 著者情報（AuthorName/Email/Bio）→ Author は別 Context (Identity Context の概念)
-3. コメント（Comments）→ Comment Aggregate（コメントは独立したライフサイクルを持つ）
-4. いいね（Likes）→ BlogPost内のカウンターで十分、詳細は分離
-5. 閲覧履歴（Views）→ Analytics Context が担う（BookPost には ViewCount のみ）
-6. 編集履歴（Revisions）→ BlogPostRevision Aggregate として分離
-7. SEO情報（SeoTitle/Description/OgImageUrl）→ BlogPostSeoMetadata として分離も可
-```
-
-```csharp
-// ✅ 改善後: BlogPost は記事の本質のみを持つ
-namespace Blog.Domain.Posts;
-
-public sealed class BlogPost
-{
-    private readonly List<Tag> _tags = [];
-
-    private BlogPost(BlogPostId id, AuthorId authorId, string title, string content)
-    {
-        Id = id;
-        AuthorId = authorId;
-        Title = title;
-        Content = content;
-        Status = PostStatus.Draft;
-        CreatedAt = DateTime.UtcNow;
-    }
-
-    public BlogPostId Id { get; }
-    public AuthorId AuthorId { get; }           // AuthorはIDのみで参照
-    public string Title { get; private set; }
-    public string Content { get; private set; }
-    public PostStatus Status { get; private set; }
-    public IReadOnlyList<Tag> Tags => _tags.AsReadOnly();
-    public int LikeCount { get; private set; }  // カウンターのみ持つ
-    public int ViewCount { get; private set; }  // カウンターのみ持つ
-    public DateTime CreatedAt { get; }
-    public DateTime? PublishedAt { get; private set; }
-    public SeoMetadata? SeoMetadata { get; private set; }
-
-    public static BlogPost Create(AuthorId authorId, string title, string content)
-    {
-        if (string.IsNullOrWhiteSpace(title))
-            throw new DomainException("タイトルは必須です");
-        if (string.IsNullOrWhiteSpace(content))
-            throw new DomainException("本文は必須です");
-
-        return new BlogPost(BlogPostId.NewId(), authorId, title, content);
-    }
-
-    public void Publish()
-    {
-        if (Status == PostStatus.Published)
-            throw new DomainException("すでに公開済みです");
-        if (string.IsNullOrWhiteSpace(Title) || string.IsNullOrWhiteSpace(Content))
-            throw new DomainException("タイトルと本文が必要です");
-
-        Status = PostStatus.Published;
-        PublishedAt = DateTime.UtcNow;
-    }
-
-    public void IncrementLike() => LikeCount++;
-    public void IncrementView() => ViewCount++;
-
-    public void SetSeoMetadata(SeoMetadata metadata)
-    {
-        SeoMetadata = metadata;
-    }
-}
-
-// コメントは独立した集約
-public sealed class Comment
-{
-    private readonly List<CommentReply> _replies = [];
-
-    private Comment(CommentId id, BlogPostId postId, AuthorId authorId, string body)
-    {
-        Id = id;
-        PostId = postId;   // BlogPost は ID のみで参照
-        AuthorId = authorId;
-        Body = body;
-        CreatedAt = DateTime.UtcNow;
-    }
-
-    public CommentId Id { get; }
-    public BlogPostId PostId { get; }   // IDのみ
-    public AuthorId AuthorId { get; }   // IDのみ
-    public string Body { get; private set; }
-    public IReadOnlyList<CommentReply> Replies => _replies.AsReadOnly();
-    public DateTime CreatedAt { get; }
-    public bool IsDeleted { get; private set; }
-
-    public static Comment Post(BlogPostId postId, AuthorId authorId, string body)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-            throw new DomainException("コメント本文は必須です");
-
-        return new Comment(CommentId.NewId(), postId, authorId, body);
-    }
-
-    public void Delete()
-    {
-        if (IsDeleted) throw new DomainException("すでに削除済みです");
-        IsDeleted = true;
-        Body = "[削除されました]";
-    }
-}
-
-// SEO メタデータは Value Object
-public sealed record SeoMetadata(string Title, string Description, string? OgImageUrl)
-{
-    public static SeoMetadata Create(string title, string description, string? ogImageUrl = null)
-    {
-        if (string.IsNullOrWhiteSpace(title))
-            throw new DomainException("SEOタイトルは必須です");
-        if (description.Length > 160)
-            throw new DomainException("SEOディスクリプションは160文字以内である必要があります");
-
-        return new SeoMetadata(title.Trim(), description.Trim(), ogImageUrl?.Trim());
-    }
-}
-```
-
----
-
-### 演習3: Domain Event の設計を改善する
-
-**問題**: 以下のコードの Domain Event 設計に含まれる問題を3つ指摘し、改善してください。
-
-```csharp
-// 問題のあるコード
-public class Product
-{
-    private readonly IEventPublisher _publisher;
-
-    public Product(IEventPublisher publisher) { _publisher = publisher; }
-
-    public Guid Id { get; set; }
-    public string Name { get; set; } = "";
-    public decimal Price { get; set; }
-    public int Stock { get; set; }
-
-    public async Task UpdatePriceAsync(decimal newPrice)
-    {
-        Price = newPrice;
-        await _publisher.PublishAsync(new ProductPriceUpdatedEvent
+        foreach (var item in inventoryItems)
         {
-            ProductId = Id,
-            ProductName = Name,
-            OldPrice = Price, // バグ: 更新後の価格を OldPrice に使っている
-            NewPrice = newPrice,
-            Stock = Stock,
-            AllRelatedCategories = GetAllCategories(), // 全カテゴリを含める
-            Timestamp = DateTime.Now
-        });
+            var requiredQty = @event.OrderLines
+                .First(l => l.ProductId == item.ProductId).Quantity;
+
+            if (!item.CanReserve(requiredQty))
+            {
+                // 在庫不足の場合は補償トランザクション（Sagaパターン）
+                await _eventBus.PublishAsync(
+                    new InventoryInsufficientForOrderEvent(@event.OrderId, item.ProductId));
+                return;
+            }
+
+            item.Reserve(requiredQty);
+        }
+
+        await _inventoryRepository.SaveAllAsync(inventoryItems);
     }
-}
-```
-
-**解答**:
-
-問題点:
-
-1. **ドメインオブジェクトがインフラに依存**: `Product` のコンストラクタに `IEventPublisher` が注入されている。ドメインオブジェクトはインフラを知るべきではない。
-2. **Eventの即時発行**: `await _publisher.PublishAsync(...)` をメソッド内で直接呼んでいる。DBへの保存が完了する前にEventが発行される可能性がある。
-3. **Eventに不要な情報が含まれる**: `AllRelatedCategories` を含めることで、Eventが肥大化し変更に脆くなる。`Stock` も価格変更Eventには不要。
-4. **バグ**: `OldPrice = Price` とあるが、この時点では `Price = newPrice` が実行済みなので、OldPriceには新価格が入っている。
-
-```csharp
-// ✅ 改善後
-namespace ECommerce.Domain.Products;
-
-public sealed class Product
-{
-    private readonly List<IDomainEvent> _events = [];
-
-    private Product(ProductId id, string name, Money price, int stock)
-    {
-        Id = id;
-        Name = name;
-        Price = price;
-        Stock = stock;
-    }
-
-    public ProductId Id { get; }
-    public string Name { get; private set; }
-    public Money Price { get; private set; }
-    public int Stock { get; private set; }
-    public IReadOnlyList<IDomainEvent> DomainEvents => _events.AsReadOnly();
-
-    public static Product Create(string name, Money price, int stock)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new DomainException("商品名は必須です");
-
-        return new Product(ProductId.NewId(), name, price, stock);
-    }
-
-    public void UpdatePrice(Money newPrice)
-    {
-        if (newPrice <= Money.Of(0m, Price.Currency))
-            throw new DomainException("価格は0より大きい必要があります");
-
-        var oldPrice = Price; // 更新前に保存
-        Price = newPrice;
-
-        // EventはDomain Objectが蓄積するだけ — 発行はUoWが行う
-        _events.Add(new ProductPriceChangedEvent(Id, oldPrice, newPrice));
-    }
-
-    public void AdjustStock(int delta)
-    {
-        var newStock = Stock + delta;
-        if (newStock < 0)
-            throw new DomainException($"在庫が不足しています（現在: {Stock}、変動: {delta}）");
-
-        Stock = newStock;
-
-        if (newStock == 0)
-            _events.Add(new StockDepletedEvent(Id, Name));
-    }
-
-    public void ClearDomainEvents() => _events.Clear();
-}
-
-// Event は最小限の情報のみ
-public sealed record ProductPriceChangedEvent(
-    ProductId ProductId,
-    Money OldPrice,
-    Money NewPrice) : IDomainEvent
-{
-    public DateTime OccurredAt { get; } = DateTime.UtcNow;
-}
-
-// 在庫枯渇はビジネス的に重要な出来事なので別Eventで表現
-public sealed record StockDepletedEvent(
-    ProductId ProductId,
-    string ProductName) : IDomainEvent
-{
-    public DateTime OccurredAt { get; } = DateTime.UtcNow;
 }
 ```
 
 ---
 
-## まとめ
+## 5. アンチパターン発見チェックリスト
 
-本章では、DDDの現場で繰り返し観察される7つの主要アンチパターンを解説しました。
+コードレビューやアーキテクチャレビューで使える30項目以上のチェックリストです。Risk欄: H=High（即修正）、M=Medium（スプリント内対応）、L=Low（次サイクル対応）。
+
+### 戦略的チェック（10項目）
+
+| # | チェック項目 | Risk | 確認方法 |
+|---|------------|------|---------|
+| S-01 | Bounded Context の境界が文書化されているか | H | Context Map の存在確認 |
+| S-02 | BC間の通信はID参照かDomain Eventのみか | H | 直接オブジェクト参照でBC境界をまたいでいないか検索 |
+| S-03 | Ubiquitous Languageが用語集として文書化されているか | M | 「user」「item」「data」等の汎用語がコードに存在しないか |
+| S-04 | ドメインエキスパートがクラス名・メソッド名を理解できるか | M | ドメインエキスパートに5分レビューしてもらう |
+| S-05 | ACLが適切に配置されているか | H | 他BCのモデルをそのまま使用していないか確認 |
+| S-06 | 1つのサービスが複数のBCをまたいでいないか | H | サービスのnamespaceとBC境界を照合 |
+| S-07 | Walking Skeletonから開発が始まっているか | M | 最初の動くコードが生まれた時期を確認 |
+| S-08 | モデルが定期的にリファクタリングされているか | M | 最後のリファクタリングコミットの日付を確認 |
+| S-09 | マイクロサービスの粒度はBC単位か | H | サービス呼び出しの連鎖が3hop以内か確認 |
+| S-10 | ドメインエキスパートとの定期的な対話セッションがあるか | M | 直近1ヶ月のドメインエキスパートとの会議記録を確認 |
+
+### 戦術的チェック（15項目）
+
+| # | チェック項目 | Risk | 確認方法 |
+|---|------------|------|---------|
+| T-01 | Entityにビジネスロジックがあるか | H | Entityのメソッドリストを確認（getter/setterのみなら危険） |
+| T-02 | Entityのsetterはprivateか | H | publicなsetterをgrepで検索 |
+| T-03 | 集約は「小さな集約」原則に従っているか | M | 集約クラスが500行を超えていないか確認 |
+| T-04 | 集約間はID参照のみか | H | ナビゲーションプロパティがBC境界をまたいでいないか |
+| T-05 | ステータス遷移はEntityが管理しているか | H | ServiceにStatus直接代入コードがないか検索 |
+| T-06 | Repositoryメソッドは基本的なCRUD + Specificationか | M | ビジネスロジックを含むメソッド名がないか確認 |
+| T-07 | Domain Serviceの使用はCross-Aggregateのみか | M | Domain Serviceが単一集約を操作していないか確認 |
+| T-08 | Application Serviceにドメインロジックがないか | H | HandlerにifやswitchでStatusを確認するコードがないか |
+| T-09 | Value Objectは不変（Immutable）か | M | Value Objectにpublicなsetterがないか確認 |
+| T-10 | Value Objectは値による等価性を持つか | M | Equals/GetHashCodeが実装されているか確認 |
+| T-11 | Domain EventはEntityのメソッドから発行されているか | M | Application ServiceからRecordEventを呼んでいないか |
+| T-12 | Domain Eventの粒度は適切か | L | 技術的変化（タイムスタンプ更新等）をEventにしていないか |
+| T-13 | FactoryメソッドはEntityまたはFactoryクラスにあるか | M | newを直接Application Serviceで呼んでいないか |
+| T-14 | 不変条件（Invariant）はEntityが守っているか | H | 整合性チェックがServiceにないか確認 |
+| T-15 | Domain Exceptionがビジネス用語で記述されているか | L | Exception messageが技術用語ではなくビジネス用語か確認 |
+
+### アーキテクチャチェック（8項目）
+
+| # | チェック項目 | Risk | 確認方法 |
+|---|------------|------|---------|
+| A-01 | 依存の方向は内側（Domain）に向いているか | H | Domain層がInfrastructure層のnamespaceをusingしていないか |
+| A-02 | DTOへの変換がPresentation/Application層で行われているか | M | ControllerがDomainオブジェクトを直接返していないか |
+| A-03 | 1トランザクションで更新する集約は1つか | H | TransactionScopeが複数のRepositoryを囲んでいないか |
+| A-04 | 読み取りモデル（Read Model）が書き込みモデルと分離されているか | M | 複雑なJOINクエリがDomainリポジトリにないか |
+| A-05 | Domain EventのHandlerが単一責任を持つか | M | 1つのHandlerが3つ以上の副作用を持っていないか |
+| A-06 | プレゼンテーション層がDomain層をusingしていないか | M | ControllerのusingにDomain.Entitiesが含まれていないか |
+| A-07 | テストがDomain層だけで完結するか | H | Domain層のテストにInfrastructureのモックが必要か確認 |
+| A-08 | 循環依存がないか | H | dotnet-dependsなどで依存グラフを可視化して確認 |
+
+---
+
+## 6. 演習問題
+
+### 演習1: アンチパターンの識別
+
+以下のコードにどのアンチパターンが含まれているかを識別し、修正してください。
+
+```csharp
+// 問題のあるコード（何箇所のアンチパターンがあるか？）
+public class CustomerService
+{
+    private readonly AppDbContext _dbContext;
+
+    public async Task<bool> ProcessPurchase(int customerId, List<CartItem> cartItems)
+    {
+        var customer = await _dbContext.Customers
+            .Include(c => c.Orders)
+            .Include(c => c.LoyaltyPoints)
+            .FirstOrDefaultAsync(c => c.Id == customerId);
+
+        if (customer == null) return false;
+
+        decimal total = 0;
+        foreach (var item in cartItems)
+        {
+            total += item.Price * item.Quantity;
+            var inv = await _dbContext.InventoryItems
+                .FirstOrDefaultAsync(i => i.ProductId == item.ProductId);
+            if (inv == null || inv.Quantity < item.Quantity) return false;
+            inv.Quantity -= item.Quantity;  // 在庫を直接操作
+        }
+
+        // 割引計算がServiceに混在（ドメインロジック）
+        if (customer.Orders.Count > 10) total *= 0.95m;
+        if (customer.LoyaltyPoints.TotalPoints > 1000) total -= 500;
+
+        var order = new Order
+        {
+            CustomerId = customerId,
+            TotalAmount = total,
+            Status = "Placed",
+            Items = cartItems.Select(i => new OrderItem
+            {
+                ProductId = i.ProductId, Quantity = i.Quantity, Price = i.Price
+            }).ToList()
+        };
+
+        _dbContext.Orders.Add(order);
+        customer.LoyaltyPoints.TotalPoints += (int)(total / 100);
+        await _dbContext.SaveChangesAsync();
+
+        return true;
+    }
+}
+```
+
+#### 解答
+
+このコードには以下の**5つのアンチパターン**が含まれています。
+
+**1. Anemic Domain Model（T-01）**: `Order`・`Customer`・`InventoryItem`にビジネスロジックがなく、全ての処理が`CustomerService`に集中しています。
+
+**2. Application Service に Domain Logic（T-08）**: 割引計算（`customer.Orders.Count > 10`等）がServiceに混在しています。これはドメインルールで、PricingPolicyとして表現されるべきです。
+
+**3. 複数集約を1トランザクションで更新（A-03）**: `Order`・`InventoryItem`・`LoyaltyPoints`の3集約を同一の`SaveChangesAsync()`で更新しています。
+
+**4. Domain が Infrastructure に依存（A-01）**: `AppDbContext`を直接Domain処理に使用しています。
+
+**5. Aggregate をまたぐオブジェクト参照（T-04）**: `customer.LoyaltyPoints`・`customer.Orders`という直接ナビゲーションで集約を跨いでいます。
+
+```csharp
+// 修正後の設計
+
+// Order集約: ビジネスロジックをカプセル化
+public class Order : AggregateRoot<OrderId>
+{
+    public static Order Place(
+        CustomerId customerId,
+        IEnumerable<OrderLineRequest> lines,
+        IPricingPolicy pricingPolicy)
+    {
+        var order = new Order
+        {
+            Id = OrderId.New(),
+            CustomerId = customerId,
+            Status = OrderStatus.Placed
+        };
+
+        foreach (var line in lines)
+            order.AddLine(line.ProductId, line.Quantity, line.UnitPrice);
+
+        // 割引はPricingPolicyに委ねる（ポリシーパターン）
+        var discount = pricingPolicy.CalculateDiscount(order);
+        if (discount > Money.Zero("JPY"))
+            order.ApplyDiscount(discount);
+
+        order.RecordEvent(new OrderPlacedEvent(order.Id, customerId, order.TotalAmount));
+        return order;
+    }
+}
+
+// InventoryItem集約: 在庫操作のロジックをカプセル化
+public class InventoryItem : AggregateRoot<InventoryItemId>
+{
+    public void Reserve(Quantity quantity)
+    {
+        if (AvailableQuantity < quantity.Value)
+            throw new DomainException(
+                $"在庫不足: 利用可能 {AvailableQuantity}、要求 {quantity.Value}");
+
+        AvailableQuantity -= quantity.Value;
+        RecordEvent(new InventoryReservedEvent(ProductId, quantity));
+    }
+}
+
+// Application Service: オーケストレーションのみ
+public class PurchaseApplicationService
+{
+    public async Task<OrderId> PurchaseAsync(PurchaseCommand command)
+    {
+        var pricingPolicy = await _pricingPolicyRepository.GetCurrentPolicyAsync();
+        var order = Order.Place(
+            new CustomerId(command.CustomerId),
+            command.Items,
+            pricingPolicy);
+
+        // Order集約のみを1トランザクションで保存
+        await _orderRepository.SaveAsync(order);
+
+        // 在庫引当・ポイント付与はDomain Eventで非同期処理
+        foreach (var e in order.DomainEvents)
+            await _eventBus.PublishAsync(e);
+
+        return order.Id;
+    }
+}
+
+// 在庫引当: 別トランザクションで非同期処理
+public class ReserveInventoryOnOrderPlacedHandler : IEventHandler<OrderPlacedEvent>
+{
+    public async Task HandleAsync(OrderPlacedEvent @event)
+    {
+        var items = await _inventoryRepository
+            .FindByProductIdsAsync(@event.ProductIds);
+
+        foreach (var item in items)
+        {
+            var qty = @event.OrderLines
+                .First(l => l.ProductId == item.ProductId).Quantity;
+            item.Reserve(new Quantity(qty));
+        }
+
+        await _inventoryRepository.SaveAllAsync(items);
+    }
+}
+
+// ポイント付与: さらに別トランザクションで非同期処理
+public class AddLoyaltyPointsOnOrderPlacedHandler : IEventHandler<OrderPlacedEvent>
+{
+    public async Task HandleAsync(OrderPlacedEvent @event)
+    {
+        var loyalty = await _loyaltyRepository.FindByCustomerIdAsync(@event.CustomerId);
+        loyalty.AddPoints(@event.TotalAmount);
+        await _loyaltyRepository.SaveAsync(loyalty);
+    }
+}
+```
+
+---
+
+### 演習2: GOD Aggregateの分割
+
+1200行を超える`Product`クラスがあります。以下の責務が混在しています。
+
+- 商品の基本情報（名前、説明、カテゴリ）
+- 価格の管理（通常価格、セール価格、期間限定価格）
+- 在庫の管理（数量、補充閾値、倉庫場所）
+- レビューの管理（コメント、評価点、承認状態）
+- SEO情報（メタタグ、スラッグ、検索キーワード）
+
+この集約をどのように分割しますか？
+
+#### 解答
+
+Vernon の4原則「業務不変条件で境界を決める」に基づき分割します。
 
 ```mermaid
-graph TD
-    subgraph "アンチパターン全体像"
-        A1[Anemic Domain Model\nビジネスロジックの流出] -->|解消| B1[Rich Domain Model\nメソッドに不変条件]
-        A2[Primitive Obsession\nstring/decimal の乱用] -->|解消| B2[Value Object\n型で意味を表現]
-        A3[God Aggregate\n1集約に全情報] -->|解消| B3[小さな集約\nIDで参照]
-        A4[Repository=QueryService\nメソッドが20個超] -->|解消| B4[CQRS + Read Model\n書き込み/読み取り分離]
-        A5[Event Spamming\n全操作にEvent] -->|解消| B5[重要な出来事のみ\nUoW後にDispatch]
-        A6[AppService に BizLogic\nif文が並ぶ] -->|解消| B6[Domain/DomainService\nオーケストレーションのみ]
-        A7[Shared Kernel 肥大化\nEntityが混入] -->|解消| B7[Money/Address のみ\n最小限に絞る]
+graph TB
+    subgraph "カタログ BC"
+        P["Product 集約\n-Id\n-Name\n-Description\n-CategoryId\n-Status\n責務: 商品の存在と基本情報"]
+        PP["ProductPricing 集約\n-ProductId(ID参照)\n-RegularPrice\n-SalePrice\n-SalePeriod\n責務: 価格ルールの管理"]
     end
+
+    subgraph "倉庫 BC"
+        PI["ProductInventory 集約\n-ProductId(ID参照)\n-WarehouseId(ID参照)\n-AvailableQty\n-ReplenishmentThreshold\n責務: 在庫量の管理"]
+    end
+
+    subgraph "口コミ BC"
+        PR["ProductReview 集約\n-ProductId(ID参照)\n-AuthorId\n-Comment\n-Rating\n-ApprovalStatus\n責務: ユーザーレビュー管理"]
+    end
+
+    subgraph "SEO BC"
+        SE["ProductSeoProfile 集約\n-ProductId(ID参照)\n-Slug\n-MetaTitle\n-SearchKeywords\n責務: 検索最適化情報"]
+    end
+
+    P -- "ProductPublishedEvent" --> PP
+    P -- "ProductPublishedEvent" --> PR
+    P -- "ProductPublishedEvent" --> SE
 ```
 
-DDDの目標は「ドメインの複雑さをコードで正確に表現すること」です。アンチパターンはすべて、その目標から逸脱した結果として現れます。本章で紹介した **症状→原因→解消策** のパターンを、日常のコードレビューで活用してください。
+**分割の根拠と業務不変条件**:
 
-次章では、DDDとマイクロサービスアーキテクチャを組み合わせる際の設計指針について解説します。
+- `Product`（基本情報）: 商品マスタ担当チームが管理。不変条件は名前・説明の必須性。
+- `ProductPricing`（価格）: 価格企画チームが独立して管理。不変条件はセール価格が通常価格以下。
+- `ProductInventory`（在庫）: 倉庫担当チームが管理。不変条件は在庫数が0以上。
+- `ProductReview`（レビュー）: CS/マーケティングチームが管理。承認ワークフローがある。
+- `ProductSeoProfile`（SEO）: マーケティングチームが管理。Slugの一意性がBC内の不変条件。
+
+この分割により、各集約は100〜200行程度に収まり、テスト・変更・デプロイが独立して行えます。また、価格変更やSEO更新のたびに商品マスタ全体のロックを取る必要がなくなり、パフォーマンスも改善します。
 
 ---
 
-*第20章 終わり*
+### 演習3: Specificationパターンの適用
+
+以下のRepositoryメソッドをSpecificationパターンに移行してください。
+
+```csharp
+public interface IProductRepository
+{
+    Task<List<Product>> GetActiveProductsInCategoryAsync(int categoryId);
+    Task<List<Product>> GetProductsWithLowInventoryAsync(int threshold);
+    Task<List<Product>> GetProductsOnSaleForVipCustomersAsync(string customerRank);
+    Task<List<Product>> GetPopularProductsNotOutOfStockAsync(int minSalesCount);
+}
+```
+
+#### 解答
+
+```csharp
+// 各クエリ条件を独立したSpecificationに分解
+public class ActiveProductSpecification : Specification<Product>
+{
+    public override Expression<Func<Product, bool>> ToExpression()
+        => p => p.Status == ProductStatus.Active;
+}
+
+public class InCategorySpecification : Specification<Product>
+{
+    private readonly CategoryId _categoryId;
+    public InCategorySpecification(CategoryId categoryId) => _categoryId = categoryId;
+
+    public override Expression<Func<Product, bool>> ToExpression()
+        => p => p.CategoryId == _categoryId;
+}
+
+public class LowInventorySpecification : Specification<Product>
+{
+    private readonly int _threshold;
+    public LowInventorySpecification(int threshold) => _threshold = threshold;
+
+    public override Expression<Func<Product, bool>> ToExpression()
+        => p => p.InventoryCount <= _threshold;
+}
+
+public class HasInventorySpecification : Specification<Product>
+{
+    public override Expression<Func<Product, bool>> ToExpression()
+        => p => p.InventoryCount > 0;
+}
+
+public class OnSaleSpecification : Specification<Product>
+{
+    public override Expression<Func<Product, bool>> ToExpression()
+        => p => p.SalePrice != null
+             && p.SalePeriodStart <= DateTime.UtcNow
+             && p.SalePeriodEnd >= DateTime.UtcNow;
+}
+
+public class PopularProductSpecification : Specification<Product>
+{
+    private readonly int _minSalesCount;
+    public PopularProductSpecification(int min) => _minSalesCount = min;
+
+    public override Expression<Func<Product, bool>> ToExpression()
+        => p => p.TotalSalesCount >= _minSalesCount;
+}
+
+// Repositoryはシンプルに保つ
+public interface IProductRepository
+{
+    Task<Product?> FindByIdAsync(ProductId id);
+    Task<IReadOnlyList<Product>> FindAsync(
+        Specification<Product> specification,
+        int? skip = null, int? take = null);
+    Task<int> CountAsync(Specification<Product> specification);
+    Task SaveAsync(Product product);
+}
+
+// Application Serviceで元の4メソッドをSpecificationの組み合わせで表現
+public class ProductQueryApplicationService
+{
+    private readonly IProductRepository _productRepository;
+
+    // GetActiveProductsInCategoryAsync の置き換え
+    public async Task<IReadOnlyList<Product>> GetActiveProductsInCategoryAsync(
+        CategoryId categoryId) =>
+        await _productRepository.FindAsync(
+            new ActiveProductSpecification()
+                .And(new InCategorySpecification(categoryId)));
+
+    // GetProductsWithLowInventoryAsync の置き換え
+    public async Task<IReadOnlyList<Product>> GetLowInventoryProductsAsync(
+        int threshold) =>
+        await _productRepository.FindAsync(
+            new ActiveProductSpecification()
+                .And(new LowInventorySpecification(threshold)));
+
+    // GetProductsOnSaleForVipCustomersAsync の置き換え
+    public async Task<IReadOnlyList<Product>> GetOnSaleProductsAsync() =>
+        await _productRepository.FindAsync(
+            new ActiveProductSpecification()
+                .And(new OnSaleSpecification())
+                .And(new HasInventorySpecification()));
+
+    // GetPopularProductsNotOutOfStockAsync の置き換え
+    public async Task<IReadOnlyList<Product>> GetPopularAvailableProductsAsync(
+        int minSalesCount) =>
+        await _productRepository.FindAsync(
+            new ActiveProductSpecification()
+                .And(new PopularProductSpecification(minSalesCount))
+                .And(new HasInventorySpecification()));
+}
+```
+
+**Specificationパターンの3つの利点**:
+
+1. **単一責任**: 各Specificationは1つの条件のみを表現します。
+2. **コンポーザビリティ**: `And`・`Or`・`Not`で自由に組み合わせられます。新しいユースケースが生まれてもRepositoryを変更せずに対応できます。
+3. **テスタビリティ**: 各Specificationは独立してユニットテストできます。`new ActiveProductSpecification().IsSatisfiedBy(cancelledOrder)` でテストが書けます。
+
+---
+
+## 参考文献と著者の解釈
+
+### 主要参考文献
+
+**Eric Evans, "Domain-Driven Design: Tackling Complexity in the Heart of Software" (2003)**
+
+DDD原典。アンチパターンという言葉は使わないが、随所に「やってはいけないこと」の示唆があります。特に「Big Ball of Mud」への言及と、「知識のかみ砕き（Knowledge Crunching）」の重要性が、本章の戦略的アンチパターン解説の基礎になっています。
+
+**Vaughn Vernon, "Implementing Domain-Driven Design" (2013)**
+
+集約設計の4原則は本書からの引用です。GOD Aggregateを避けるための実践的ガイドラインを提供しています。特に「小さな集約」の章は本章の3.2節の基礎です。
+
+**Martin Fowler, "Anemic Domain Model" (2003, bliki)**
+
+公式ウェブサイト(martinfowler.com)の記事。「このアンチパターンは依然として蔓延している。そしてそれは、本来オブジェクト指向として設計するべきものを、プロシージャル型のアプローチで実装する方法に過ぎない」という言葉が印象的です。
+
+**Vaughn Vernon, "Domain-Driven Design Distilled" (2016)**
+
+DDDのエッセンスを短くまとめた入門書。戦略的設計とBounded Contextの重要性を強調しています。
+
+**Martin Fowler, "Patterns of Enterprise Application Architecture" (2002)**
+
+RepositoryパターンとSpecificationパターンの源流となる書籍です。本章の3.4節の解説に活用しています。
+
+**Greg Young, "CQRS Documents" (2010)**
+
+読み取りモデルと書き込みモデルの分離に関する理解が、4.1節と4.3節の実装例に反映されています。
+
+### 著者の解釈
+
+本章を通じて筆者が最も伝えたかったのは、「アンチパターンは悪意から生まれない」という事実です。殆どの場合、アンチパターンは「良かれと思って」あるいは「とりあえず動くものを」という意図から生まれます。締め切りのプレッシャーの中で「ここに書けば一番早い」という判断が積み重なり、気づいたときには修正が困難な状態になっています。
+
+**Anemic Domain ModelとGOD Aggregateは共存する**という点も重要です。GOD Aggregateを避けようとするあまり、ロジックをServiceに移動させると、その結果がAnemic Domain Modelになります。逆に、Anemic Domain Modelを解消しようとして全てのロジックをEntityに詰め込むと、GOD Aggregateになります。この「振り子問題」を解決するのが、Vernon の4原則と「業務不変条件に基づく境界設計」です。
+
+また、**アーキテクチャアンチパターンは戦術的アンチパターンが引き起こす**という連鎖も見逃せません。Domain LayerがInfrastructureに依存するようになるのは、多くの場合、Entityがビジネスロジックを持たないためにServiceがEntityの内部データを直接操作しようとすることが原因です。
+
+DDDのアンチパターンを学ぶ最大の価値は「コードが劣化していく方向性を事前に察知できる」ことです。本章のチェックリスト33項目を定期的なコードレビュー（例えばスプリントレビューで10分のアーキテクチャチェック）に組み込み、「今日のコードが半年後の技術的負債にならないか」を問い続けることが、DDDを実践するエンジニアの本質的な仕事です。
+
+設計の改善は一夜では起こりません。Big Ball of Mudに陥ったシステムも、チームが意識を共有し、一つのユースケースずつBounded Contextを切り出し、一つのEntityずつリッチモデルに変えていくことで、確実に改善できます。DDDはゴールではなく、継続的な学習と改善のプロセスです。
+
+---
+
+*次章（第21章）では、DDDとUMLクラス図の活用について解説します。複雑なドメインモデルを視覚的に表現し、チームのコミュニケーションを促進するための実践的な技法を学びます。*
