@@ -42,3 +42,8 @@ chapters:
   - 19-microservices
   - 20-antipatterns
   - 21-class-diagrams
+  - 22-saga-process-manager
+  - 23-read-model-design
+  - appendix-a-references
+  - appendix-b-glossary
+  - appendix-c-decision-flowchart

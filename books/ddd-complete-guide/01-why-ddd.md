@@ -3,6 +3,7 @@ title: "第1章: DDDとは何か"
 ---
 
 
+
 ## 1.1 2003年、Eric Evansが見た危機
 
 2003年、Eric Evansは500ページを超える一冊の本を世に送り出しました。タイトルは *Domain-Driven Design: Tackling Complexity in the Heart of Software*（通称「Blue Book」）。この本が生まれた背景には、当時のソフトウェア業界が直面していた深刻な問題がありました。
@@ -160,7 +161,7 @@ public class Reservation
 
 ---
 
-> ### 専門家の視点：Eric Evans
+> ### 参考文献と著者の解釈：Eric Evans
 >
 > Eric Evansは *Domain-Driven Design*（2003年）の中でこう述べています。
 >
